@@ -1,71 +1,121 @@
-// import * as cheerio from "cheerio";
-const cheerio = require("cheerio");
-const fs = require("fs");
+const express = require("express");
+const mongoose = require("mongoose");
+const Events = require("./models/eventsModel");
+const app = express();
 
-async function mmaEventScrape() {
-  const baseUrl = "https://www.tapology.com";
+const { data } = require("./data");
+const mmaEventScrape = require("./utils/scrape");
 
-  // fetch page from url
-  const response = await fetch(`${baseUrl}/fightcenter?group=ufc`);
-  // convert response into text
-  const text = await response.text();
-  // load body data
-  const $ = cheerio.load(text);
+// middleware for app to use json
+app.use(express.json());
 
-  // store events in array of objects
-  let events = $(".left")
-    .map((index, el) => {
-      const title = $(el).find(".name").text().trim();
-      const dateTime = $(el).find(".datetime").text().trim();
-      const link = baseUrl + $(el).find(".name a").attr("href");
+// post endpoint to trigger mmaEventsScrape
+app.post("/scrape", async (req, res) => {
+  const { key } = req.body;
 
-      // ***BUG 1st index of map is undefined
-      if (title || dateTime) return { title, dateTime, link };
-    })
-    .get()
-    .slice(0, 1); // keep only 2 results....
-
-  // loop through array of events
-  for (const event of events) {
-    const eventResponse = await fetch(event.link);
-    const eventText = await eventResponse.text();
-    const $event = cheerio.load(eventText);
-
-    // get fights in events
-    const fights = $event("li.fightCard:not(.picks)")
-      .map((index, el) => {
-        const isMainCard = $(el)
-          .find(".billing")
-          .text()
-          .trim()
-          .toLowerCase()
-          .includes("main");
-
-        const fighter1 = {
-          name: $(el).find(".fightCardFighterName.left a").text().trim(),
-          link:
-            baseUrl + $(el).find(".fightCardFighterName.left a").attr("href"),
-        };
-
-        const fighter2 = {
-          name: $(el).find(".fightCardFighterName.right a").text().trim(),
-          link:
-            baseUrl + $(el).find(".fightCardFighterName.right a").attr("href"),
-        };
-
-        return { isMainCard, fighter1, fighter2 };
-      })
-      .get();
-
-    //add fight to event
-    event.fights = fights;
+  // check for invalid key
+  if (!key || key !== 1234) {
+    return res.status(401).send({
+      message: "invalid key",
+    });
   }
 
-  // save data to JSON file
-  fs.writeFile("events.json", JSON.stringify(events), (err) => {
-    if (err) throw err;
-    console.log("FILE SAVED");
-  });
-}
+  // scrape and update DB
+  try {
+    console.log("scraper called");
+    const scrapedData = await mmaEventScrape();
+    console.log("scraper successful");
+    await Events.create(scrapedData);
+    res.status(200).json(scrapedData);
+  } catch (err) {
+    console.log(err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
 
-mmaEventScrape();
+// create events entry
+app.post("/events", async (req, res) => {
+  try {
+    const events = await Events.create(req.body);
+    res.status(200).json(events);
+  } catch (err) {
+    console.log(err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// update an event
+app.put("/events/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const event = await Events.findByIdAndUpdate(id, req.body);
+
+    // cannot find event in database
+    if (!event) {
+      return res
+        .status(404)
+        .json({ message: `cannot find any events with ID ${id}` });
+    }
+    const updatedEvent = await Events.findById(id);
+    res.status(200).json(event);
+  } catch (err) {
+    console.log(err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// delete an event
+app.delete("/events/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const event = await Events.findByIdAndDelete(id);
+
+    // cannot find event in database
+    if (!event) {
+      return res
+        .status(404)
+        .json({ message: `cannot find any events with ID ${id}` });
+    }
+    res.status(200).json(event);
+  } catch (err) {
+    console.log(err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// get all events
+app.get("/events", async (req, res) => {
+  try {
+    const events = await Events.find({});
+    res.status(200).json(events);
+  } catch (err) {
+    console.log(err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// get event by id
+app.get("/events/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const event = await Events.findById(id);
+    res.status(200).json(event);
+  } catch (err) {
+    console.log(err.message);
+    res.status(500).json({ message: err.message });
+  }
+});
+
+mongoose
+  .connect(
+    "mongodb+srv://admin:fEWAQJ9Wli9P9aB7@mma-api.lctgl0v.mongodb.net/mma-api"
+  )
+  .then(() => {
+    app.listen(3000, () => {
+      console.log("Node API app is running on port 3000");
+    });
+    console.log("connected to MongoDB");
+  })
+  .catch((err) => {
+    console.log(err);
+  });
