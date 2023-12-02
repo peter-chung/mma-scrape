@@ -1,7 +1,4 @@
-// import * as cheerio from "cheerio";
 const cheerio = require("cheerio");
-
-// const fs = require("fs");
 
 async function mmaEventScrape() {
   const baseUrl = "https://www.tapology.com";
@@ -63,13 +60,6 @@ async function mmaEventScrape() {
   }
 
   return { data: events };
-
-  // save data to JSON file
-  // fs.writeFile("events.json", JSON.stringify(events), (err) => {
-  //   if (err) throw err;
-  //   console.log("FILE SAVED");
-  // });
 }
 
-// mmaEventScrape();
 module.exports = mmaEventScrape;

@@ -3,7 +3,6 @@ const mongoose = require("mongoose");
 const Events = require("./models/eventsModel");
 const app = express();
 
-const { data } = require("./data");
 const mmaEventScrape = require("./utils/scrape");
 
 // middleware for app to use json
