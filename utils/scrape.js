@@ -1,6 +1,6 @@
 const cheerio = require("cheerio");
 
-async function mmaEventScrape() {
+async function scrape() {
   const baseUrl = "https://www.tapology.com";
 
   // fetch page from url
@@ -62,4 +62,4 @@ async function mmaEventScrape() {
   return { data: events };
 }
 
-module.exports = mmaEventScrape;
+module.exports = scrape;

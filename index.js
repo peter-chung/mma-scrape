@@ -1,9 +1,10 @@
+require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
-const Events = require("./models/eventsModel");
 const app = express();
 
-const mmaEventScrape = require("./utils/scrape");
+const Events = require("./models/eventsModel");
+const scrape = require("./utils/scrape");
 
 // middleware for app to use json
 app.use(express.json());
@@ -13,7 +14,7 @@ app.post("/scrape", async (req, res) => {
   const { key } = req.body;
 
   // check for invalid key
-  if (!key || key !== 1234) {
+  if (!key || key !== process.env.SCRAPER_KEY) {
     return res.status(401).send({
       message: "invalid key",
     });
@@ -22,7 +23,7 @@ app.post("/scrape", async (req, res) => {
   // scrape and update DB
   try {
     console.log("scraper called");
-    const scrapedData = await mmaEventScrape();
+    const scrapedData = await scrape();
     console.log("scraper successful");
     const response = await Events.create(scrapedData);
     res.status(200).json(response);
@@ -106,9 +107,7 @@ app.get("/events/:id", async (req, res) => {
 });
 
 mongoose
-  .connect(
-    "mongodb+srv://admin:fEWAQJ9Wli9P9aB7@mma-api.lctgl0v.mongodb.net/mma-api"
-  )
+  .connect(process.env.DATABASE_URL)
   .then(() => {
     app.listen(3000, () => {
       console.log("Node API app is running on port 3000");
