@@ -24,8 +24,8 @@ app.post("/scrape", async (req, res) => {
     console.log("scraper called");
     const scrapedData = await mmaEventScrape();
     console.log("scraper successful");
-    await Events.create(scrapedData);
-    res.status(200).json(scrapedData);
+    const response = await Events.create(scrapedData);
+    res.status(200).json(response);
   } catch (err) {
     console.log(err.message);
     res.status(500).json({ message: err.message });
