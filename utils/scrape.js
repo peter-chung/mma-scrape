@@ -20,8 +20,9 @@ async function scrape() {
       // ***BUG 1st index of map is undefined
       if (title || dateTime) return { title, dateTime, link };
     })
-    .get()
-    .slice(0, 1); // keep only 2 results....
+    .get();
+  // keep only 2 results....
+  // .slice(0, 1);
 
   // loop through array of events
   for (const event of events) {
