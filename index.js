@@ -7,7 +7,9 @@ const app = express();
 const Events = require("./models/eventsModel");
 const scrape = require("./utils/scrape");
 
+// middleware to configure cors
 app.use(cors());
+
 // middleware for app to use json
 app.use(express.json());
 
