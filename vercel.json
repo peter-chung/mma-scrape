@@ -4,7 +4,7 @@
   "routes": [{ "src": "/(.*)", "dest": "/" }],
   "crons": [
     {
-      "path": "/events",
+      "path": "/utils/triggerScrape.js",
       "schedule": "0 5 * * *"
     }
   ]
