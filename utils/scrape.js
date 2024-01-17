@@ -61,11 +61,7 @@ async function scrape() {
     event.fights = fights;
   }
 
-  console.log(events);
-
   return { data: events };
 }
-
-scrape();
 
 module.exports = scrape;
