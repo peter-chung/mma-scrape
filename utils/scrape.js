@@ -5,18 +5,19 @@ async function scrape() {
 
   // fetch page from url
   const response = await fetch(`${baseUrl}/fightcenter?group=ufc`);
+
   // convert response into text
   const text = await response.text();
+
   // load body data
   const $ = cheerio.load(text);
 
   // store events in array of objects
-  let events = $(".left")
+  let events = $(".text-left")
     .map((index, el) => {
-      const title = $(el).find(".name").text().trim();
-      const dateTime = $(el).find(".datetime").text().trim();
-      const link = baseUrl + $(el).find(".name a").attr("href");
-
+      const title = $(el).find("span:nth-child(1) a").text().trim();
+      const dateTime = $(el).find(".promotion span:nth-child(3)").text().trim();
+      const link = baseUrl + $(el).find(".promotion span a").attr("href");
       // ***BUG 1st index of map is undefined
       if (title || dateTime) return { title, dateTime, link };
     })
@@ -60,7 +61,11 @@ async function scrape() {
     event.fights = fights;
   }
 
+  console.log(events);
+
   return { data: events };
 }
+
+scrape();
 
 module.exports = scrape;
