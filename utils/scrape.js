@@ -22,7 +22,7 @@ async function scrape() {
       if (title || dateTime) return { title, dateTime, link };
     })
     .get();
-  // keep only 2 results....
+  // keep only 1 results....
   // .slice(0, 1);
 
   // loop through array of events
@@ -32,25 +32,27 @@ async function scrape() {
     const $event = cheerio.load(eventText);
 
     // get fights in events
-    const fights = $event("li.fightCard:not(.picks)")
+    const fights = $event("#sectionFightCard li")
       .map((index, el) => {
         const isMainCard = $(el)
-          .find(".billing")
+          .find("span")
           .text()
           .trim()
           .toLowerCase()
           .includes("main");
 
         const fighter1 = {
-          name: $(el).find(".fightCardFighterName.left a").text().trim(),
+          name: $(el).find("[id$=_leftBio] a.link-primary-red").text().trim(),
           link:
-            baseUrl + $(el).find(".fightCardFighterName.left a").attr("href"),
+            baseUrl +
+            $(el).find("[id$=_leftBio] a.link-primary-red").attr("href"),
         };
 
         const fighter2 = {
-          name: $(el).find(".fightCardFighterName.right a").text().trim(),
+          name: $(el).find("[id$=_rightBio] a.link-primary-red").text().trim(),
           link:
-            baseUrl + $(el).find(".fightCardFighterName.right a").attr("href"),
+            baseUrl +
+            $(el).find("[id$=_rightBio] a.link-primary-red").attr("href"),
         };
 
         return { isMainCard, fighter1, fighter2 };
