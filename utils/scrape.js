@@ -42,14 +42,21 @@ async function scrape() {
           .includes("main");
 
         const fighter1 = {
-          name: $(el).find("[id$=_leftBio] a.link-primary-red").text().trim(),
+          // name: $(el).find("[id$=_leftBio] a.link-primary-red").text().trim(),
+          name: $(el)
+            .find("[id$=_leftBio] a.link-primary-red:first")
+            .text()
+            .trim(),
           link:
             baseUrl +
             $(el).find("[id$=_leftBio] a.link-primary-red").attr("href"),
         };
 
         const fighter2 = {
-          name: $(el).find("[id$=_rightBio] a.link-primary-red").text().trim(),
+          name: $(el)
+            .find("[id$=_rightBio] a.link-primary-red:first")
+            .text()
+            .trim(),
           link:
             baseUrl +
             $(el).find("[id$=_rightBio] a.link-primary-red").attr("href"),
