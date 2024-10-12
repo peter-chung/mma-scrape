@@ -16,13 +16,17 @@ async function scrape() {
   let events = $(".text-left")
     .map((index, el) => {
       const title = $(el).find("span:nth-child(1) a").text().trim();
-      const dateTime = $(el).find(".promotion span:nth-child(3)").text().trim();
+      const dateTime = $(el).find(".promotion span:nth-child(4)").text().trim();
+      console.log(dateTime);
       const link = baseUrl + $(el).find(".promotion span a").attr("href");
+
       // ***BUG 1st index of map is undefined
       if (title || dateTime) return { title, dateTime, link };
     })
     .get();
+
   // keep only 1 results....
+  // .get()
   // .slice(0, 1);
 
   // loop through array of events
@@ -31,7 +35,24 @@ async function scrape() {
     const eventText = await eventResponse.text();
     const $event = cheerio.load(eventText);
 
-    // get fights in events
+    const details = $event("#primaryDetailsContainer")
+      .map((index, el) => {
+        const fullDateTime = $(el)
+          .find("ul li:eq(0) span:eq(1)")
+          .text()
+          .trim()
+          .toLowerCase();
+        const venue = $(el).find("ul li:eq(4) span:eq(1)").text().trim();
+        const location = $(el).find("ul li:eq(5) span:eq(1)").text().trim();
+
+        return { fullDateTime, venue, location };
+      })
+      .get();
+
+    // add details to event
+    event.details = details;
+
+    // add fights to events
     const fights = $event("#sectionFightCard li")
       .map((index, el) => {
         const isMainCard = $(el)
