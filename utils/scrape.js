@@ -25,10 +25,6 @@ async function scrape() {
     })
     .get();
 
-  // keep only 1 results....
-  // .get()
-  // .slice(0, 1);
-
   // loop through array of events
   for (const event of events) {
     const eventResponse = await fetch(event.link);
@@ -63,7 +59,6 @@ async function scrape() {
           .includes("main");
 
         const fighter1 = {
-          // name: $(el).find("[id$=_leftBio] a.link-primary-red").text().trim(),
           name: $(el)
             .find("[id$=_leftBio] a.link-primary-red:first")
             .text()
