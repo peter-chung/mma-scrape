@@ -1,89 +1,265 @@
 const cheerio = require("cheerio");
 
+const baseUrl = "https://www.ufc.com";
+const requestHeaders = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+function normalizeText(value = "") {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function getDateTimeInfo($, containerSelector, timeSelector = containerSelector) {
+  const timeNode = $(timeSelector).first();
+  const unixTimestamp = timeNode.attr("data-timestamp");
+
+  if (unixTimestamp) {
+    return {
+      iso: new Date(Number(unixTimestamp) * 1000).toISOString(),
+    };
+  }
+
+  return {
+    iso: timeNode.attr("datetime") || "",
+  };
+}
+
+function getViewingOptionTime($, label) {
+  let iso = "";
+
+  $(".c-listing-viewing-option").each((index, el) => {
+    if (iso) {
+      return;
+    }
+
+    const option = $(el);
+    const fightCardLabel = normalizeText(
+      option.find(".c-listing-viewing-option__fight-card").first().text()
+    ).toLowerCase();
+
+    if (fightCardLabel !== label.toLowerCase()) {
+      return;
+    }
+
+    iso = getDateTimeInfo($, "", option.find(".c-listing-viewing-option__time").first()).iso;
+  });
+
+  return {
+    iso,
+  };
+}
+
+function getEventTimes($) {
+  const legacyMainCard = getDateTimeInfo(
+    $,
+    ".hero-fixed-bar__date.tz-change-inner",
+    ".field--name-fight-card-time-main time"
+  );
+  const legacyPrelims = getDateTimeInfo(
+    $,
+    ".field--name-fight-card-time-prelims",
+    ".field--name-fight-card-time-prelims time"
+  );
+  const viewingOptionMainCard = getViewingOptionTime($, "Main Card");
+  const viewingOptionPrelims = getViewingOptionTime($, "Prelims");
+
+  return {
+    mainCard: viewingOptionMainCard.iso ? viewingOptionMainCard : legacyMainCard,
+    prelims: viewingOptionPrelims.iso ? viewingOptionPrelims : legacyPrelims,
+  };
+}
+
+async function fetchHtml(url) {
+  const response = await fetch(url, { headers: requestHeaders });
+
+  if (!response.ok) {
+    throw new Error(`request failed for ${url}: ${response.status}`);
+  }
+
+  return response.text();
+}
+
+function toAbsoluteUrl(url = "") {
+  if (!url) return "";
+  if (url.startsWith("http")) return url;
+  return `${baseUrl}${url}`;
+}
+
+function parseLocation(locationText = "") {
+  const parts = locationText
+    .split(",")
+    .map((part) => normalizeText(part))
+    .filter(Boolean);
+
+  if (parts.length >= 2) {
+    return {
+      venue: parts[0],
+      location: parts.slice(1).join(", "),
+    };
+  }
+
+  return {
+    venue: normalizeText(locationText),
+    location: "",
+  };
+}
+
+function parseFight($fight, isMainCard) {
+  const fighterLinks = [];
+
+  $fight.find('a[href*="/athlete/"]').each((index, el) => {
+    const href = toAbsoluteUrl($fight.find(el).attr("href"));
+
+    if (!href || fighterLinks.some((fighter) => fighter.link === href)) {
+      return;
+    }
+
+    const name = normalizeText($fight.find(el).text());
+
+    if (!name) {
+      return;
+    }
+
+    fighterLinks.push({ name, link: href });
+  });
+
+  if (fighterLinks.length < 2) {
+    return null;
+  }
+
+  return {
+    isMainCard,
+    fighter1: fighterLinks[0],
+    fighter2: fighterLinks[1],
+  };
+}
+
+function parseFightCollection($, selector, isMainCard) {
+  const fights = [];
+
+  $(selector).each((index, el) => {
+    const fight = parseFight($(el), isMainCard);
+    if (fight) fights.push(fight);
+  });
+
+  return fights;
+}
+
+function inferCardBreakdown(link, fights) {
+  if (!fights.length) {
+    return fights;
+  }
+
+  const inferredMainCardCount = /\/event\/ufc-\d+/i.test(link) ? 5 : fights.length;
+
+  return fights.map((fight, index) => ({
+    ...fight,
+    isMainCard: index < inferredMainCardCount,
+  }));
+}
+
+function parseEventFights($, link) {
+  const mainCardFights = parseFightCollection($, ".main-card .c-listing-fight", true);
+  const prelimFights = parseFightCollection(
+    $,
+    ".fight-card-prelims .c-listing-fight, .fight-card-early-prelims .c-listing-fight",
+    false
+  );
+
+  if (mainCardFights.length || prelimFights.length) {
+    return [...mainCardFights, ...prelimFights];
+  }
+
+  const fallbackFights = parseFightCollection($, ".view-event-fights .c-listing-fight", false);
+  return inferCardBreakdown(link, fallbackFights);
+}
+
+async function scrapeEvent(url) {
+  const html = await fetchHtml(url);
+  const $ = cheerio.load(html);
+
+  const promotion = normalizeText($(".field--name-node-title").first().text());
+  const headline = normalizeText($(".c-hero__headline").first().text());
+  const { mainCard, prelims } = getEventTimes($);
+  const venueText = normalizeText($(".hero-fixed-bar__place").first().text());
+  const { venue, location } = parseLocation(venueText);
+
+  const title =
+    promotion && headline ? `${promotion}: ${headline}` : promotion || headline;
+
+  const fights = parseEventFights($, url);
+
+  return {
+    title,
+    mainCardStartIso: mainCard.iso,
+    prelimsStartIso: prelims.iso,
+    link: url,
+    venue,
+    location,
+    fights,
+  };
+}
+
+function extractUpcomingEventLinks($) {
+  const eventLinks = [];
+
+  $("#events-list-upcoming .c-card-event--result").each((index, el) => {
+    const card = $(el);
+    const relativeUrl = card.find('a[href*="/event/"]').first().attr("href");
+    const link = toAbsoluteUrl(relativeUrl);
+
+    if (!link || eventLinks.includes(link)) {
+      return;
+    }
+
+    eventLinks.push(link);
+  });
+
+  return eventLinks;
+}
+
 async function scrape() {
-  const baseUrl = "https://www.tapology.com";
+  const eventLinks = [];
+  let page = 0;
 
-  // fetch page from url
-  const response = await fetch(`${baseUrl}/fightcenter?group=ufc`);
+  while (true) {
+    const url = page === 0 ? `${baseUrl}/events` : `${baseUrl}/events?page=${page}`;
+    const text = await fetchHtml(url);
+    const $ = cheerio.load(text);
+    const pageLinks = extractUpcomingEventLinks($);
+    const newLinks = pageLinks.filter((link) => !eventLinks.includes(link));
 
-  // convert response into text
-  const text = await response.text();
+    if (!newLinks.length) {
+      break;
+    }
 
-  // load body data
-  const $ = cheerio.load(text);
+    eventLinks.push(...newLinks);
 
-  // store events in array of objects
-  let events = $(".text-left")
-    .map((index, el) => {
-      const title = $(el).find("span:nth-child(1) a").text().trim();
-      const dateTime = $(el).find(".promotion span:nth-child(4)").text().trim();
-      console.log(dateTime);
-      const link = baseUrl + $(el).find(".promotion span a").attr("href");
+    const hasMorePages = $("#events-list-upcoming .pager a[rel='next']").length > 0;
 
-      // ***BUG 1st index of map is undefined
-      if (title || dateTime) return { title, dateTime, link };
-    })
-    .get();
+    if (!hasMorePages) {
+      break;
+    }
 
-  // loop through array of events
-  for (const event of events) {
-    const eventResponse = await fetch(event.link);
-    const eventText = await eventResponse.text();
-    const $event = cheerio.load(eventText);
+    page += 1;
+  }
 
-    const details = $event("#primaryDetailsContainer")
-      .map((index, el) => {
-        const fullDateTime = $(el)
-          .find("ul li:eq(0) span:eq(1)")
-          .text()
-          .trim()
-          .toLowerCase();
-        const venue = $(el).find("ul li:eq(4) span:eq(1)").text().trim();
-        const location = $(el).find("ul li:eq(5) span:eq(1)").text().trim();
+  if (!eventLinks.length) {
+    throw new Error("no UFC events found on listing page");
+  }
 
-        return { fullDateTime, venue, location };
-      })
-      .get();
+  const events = [];
 
-    // add details to event
-    event.details = details;
+  for (const link of eventLinks) {
+    const event = await scrapeEvent(link);
+    events.push(event);
+  }
 
-    // add fights to events
-    const fights = $event("#sectionFightCard li")
-      .map((index, el) => {
-        const isMainCard = $(el)
-          .find("span")
-          .text()
-          .trim()
-          .toLowerCase()
-          .includes("main");
-
-        const fighter1 = {
-          name: $(el)
-            .find("[id$=_leftBio] a.link-primary-red:first")
-            .text()
-            .trim(),
-          link:
-            baseUrl +
-            $(el).find("[id$=_leftBio] a.link-primary-red").attr("href"),
-        };
-
-        const fighter2 = {
-          name: $(el)
-            .find("[id$=_rightBio] a.link-primary-red:first")
-            .text()
-            .trim(),
-          link:
-            baseUrl +
-            $(el).find("[id$=_rightBio] a.link-primary-red").attr("href"),
-        };
-
-        return { isMainCard, fighter1, fighter2 };
-      })
-      .get();
-
-    //add fight to event
-    event.fights = fights;
+  if (!events.length) {
+    throw new Error("event scrape produced no data");
   }
 
   return { data: events };
