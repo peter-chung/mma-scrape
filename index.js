@@ -1,4 +1,10 @@
-require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
+const envPath = path.join(__dirname, ".env.local");
+
+require("dotenv").config(
+  fs.existsSync(envPath) ? { path: envPath } : undefined
+);
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -7,71 +13,214 @@ const app = express();
 const Events = require("./models/eventsModel");
 const scrape = require("./utils/scrape");
 
-// middleware to configure cors
-app.use(cors());
+const DEFAULT_ALLOWED_ORIGINS = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:5173",
+];
 
-// middleware for app to use json
-app.use(express.json());
+function sendServerError(res, err) {
+  console.log(err.message);
+  return res.status(500).json({ message: err.message });
+}
 
-// post endpoint to trigger mmaEventsScrape
-app.post("/scrape", async (req, res) => {
-  const { key } = req.body;
+function isValidObjectId(id) {
+  return mongoose.Types.ObjectId.isValid(id);
+}
 
-  // check for invalid key
-  if (!key || key !== process.env.SCRAPER_KEY) {
-    return res.status(401).send({
-      message: "invalid key",
+function getRequiredEnv(name) {
+  const value = process.env[name];
+
+  if (!value) {
+    throw new Error(`Missing required environment variable ${name}`);
+  }
+
+  return value;
+}
+
+function getApiKey(req) {
+  return req.get("x-api-key") || req.body?.key;
+}
+
+function parseAllowedOrigins() {
+  const configuredOrigins = process.env.CORS_ORIGIN
+    ?.split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  return configuredOrigins?.length ? configuredOrigins : DEFAULT_ALLOWED_ORIGINS;
+}
+
+function corsOriginValidator(origin, callback) {
+  const allowedOrigins = parseAllowedOrigins();
+
+  if (!origin || allowedOrigins.includes(origin)) {
+    return callback(null, true);
+  }
+
+  return callback(new Error("CORS origin not allowed"));
+}
+
+function requireApiKey(req, res, next) {
+  const apiKey = getApiKey(req);
+
+  if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
+    return res.status(401).json({ message: "invalid API key" });
+  }
+
+  return next();
+}
+
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isValidNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isValidFighter(fighter) {
+  return (
+    isPlainObject(fighter) &&
+    isValidNonEmptyString(fighter.name) &&
+    isValidNonEmptyString(fighter.link)
+  );
+}
+
+function isValidFight(fight) {
+  return (
+    isPlainObject(fight) &&
+    typeof fight.isMainCard === "boolean" &&
+    isValidFighter(fight.fighter1) &&
+    isValidFighter(fight.fighter2)
+  );
+}
+
+function isValidEventDetail(details) {
+  if (!isPlainObject(details)) {
+    return false;
+  }
+
+  const fields = [
+    details.mainCardStartIso,
+    details.prelimsStartIso,
+    details.venue,
+    details.location,
+  ];
+
+  return fields.every((field) => typeof field === "string");
+}
+
+function isValidEvent(event) {
+  return (
+    isPlainObject(event) &&
+    isValidNonEmptyString(event.title) &&
+    isValidNonEmptyString(event.link) &&
+    typeof event.mainCardStartIso === "string" &&
+    typeof event.prelimsStartIso === "string" &&
+    isValidEventDetail(event.details) &&
+    Array.isArray(event.fights) &&
+    event.fights.every(isValidFight)
+  );
+}
+
+function validateEventsPayload(req, res, next) {
+  const { data } = req.body;
+
+  if (!Array.isArray(data) || !data.every(isValidEvent)) {
+    return res.status(400).json({
+      message:
+        "invalid events payload; expected { data: [event] } with typed event objects",
     });
   }
 
+  return next();
+}
+
+getRequiredEnv("DATABASE_URL");
+process.env.ADMIN_API_KEY = process.env.ADMIN_API_KEY || getRequiredEnv("SCRAPER_KEY");
+
+// middleware to configure cors
+app.disable("x-powered-by");
+app.use(
+  cors({
+    origin: corsOriginValidator,
+  })
+);
+
+// middleware for app to use json
+app.use(express.json({ limit: "100kb" }));
+
+// post endpoint to trigger mmaEventsScrape
+app.post("/scrape", requireApiKey, async (req, res) => {
   // scrape and update DB
   try {
     console.log("scraper called");
     const scrapedData = await scrape();
     console.log("scraper successful");
-    const response = await Events.create(scrapedData);
+    const response = await Events.findOneAndUpdate({}, scrapedData, {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true,
+    });
     res.status(200).json(response);
   } catch (err) {
-    console.log(err.message);
-    res.status(500).json({ message: err.message });
+    return sendServerError(res, err);
   }
 });
 
 // create events entry
-app.post("/events", async (req, res) => {
+app.post("/events", requireApiKey, validateEventsPayload, async (req, res) => {
   try {
     const events = await Events.create(req.body);
-    res.status(200).json(events);
+    return res.status(201).json(events);
   } catch (err) {
-    console.log(err.message);
-    res.status(500).json({ message: err.message });
+    return sendServerError(res, err);
   }
 });
 
 // update an event
-app.put("/events/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const event = await Events.findByIdAndUpdate(id, req.body);
+app.put(
+  "/events/:id",
+  requireApiKey,
+  validateEventsPayload,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
 
-    // cannot find event in database
-    if (!event) {
-      return res
-        .status(404)
-        .json({ message: `cannot find any events with ID ${id}` });
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({ message: `invalid event ID ${id}` });
+      }
+
+      const updatedEvent = await Events.findByIdAndUpdate(id, req.body, {
+        new: true,
+        runValidators: true,
+      });
+
+      // cannot find event in database
+      if (!updatedEvent) {
+        return res
+          .status(404)
+          .json({ message: `cannot find any events with ID ${id}` });
+      }
+
+      return res.status(200).json(updatedEvent);
+    } catch (err) {
+      return sendServerError(res, err);
     }
-    const updatedEvent = await Events.findById(id);
-    res.status(200).json(event);
-  } catch (err) {
-    console.log(err.message);
-    res.status(500).json({ message: err.message });
   }
-});
+);
 
 // delete an event
-app.delete("/events/:id", async (req, res) => {
+app.delete("/events/:id", requireApiKey, async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: `invalid event ID ${id}` });
+    }
+
     const event = await Events.findByIdAndDelete(id);
 
     // cannot find event in database
@@ -80,10 +229,10 @@ app.delete("/events/:id", async (req, res) => {
         .status(404)
         .json({ message: `cannot find any events with ID ${id}` });
     }
-    res.status(200).json(event);
+
+    return res.status(200).json(event);
   } catch (err) {
-    console.log(err.message);
-    res.status(500).json({ message: err.message });
+    return sendServerError(res, err);
   }
 });
 
@@ -91,10 +240,9 @@ app.delete("/events/:id", async (req, res) => {
 app.get("/events", async (req, res) => {
   try {
     const events = await Events.find({});
-    res.status(200).json(events);
+    return res.status(200).json(events);
   } catch (err) {
-    console.log(err.message);
-    res.status(500).json({ message: err.message });
+    return sendServerError(res, err);
   }
 });
 
@@ -102,11 +250,22 @@ app.get("/events", async (req, res) => {
 app.get("/events/:id", async (req, res) => {
   try {
     const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ message: `invalid event ID ${id}` });
+    }
+
     const event = await Events.findById(id);
-    res.status(200).json(event);
+
+    if (!event) {
+      return res
+        .status(404)
+        .json({ message: `cannot find any events with ID ${id}` });
+    }
+
+    return res.status(200).json(event);
   } catch (err) {
-    console.log(err.message);
-    res.status(500).json({ message: err.message });
+    return sendServerError(res, err);
   }
 });
 
