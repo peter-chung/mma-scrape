@@ -97,29 +97,19 @@ function isValidFight(fight) {
   );
 }
 
-function isValidEventDetail(details) {
-  if (!isPlainObject(details)) {
+function isValidEvent(event) {
+  if (!isPlainObject(event)) {
     return false;
   }
 
-  const fields = [
-    details.mainCardStartIso,
-    details.prelimsStartIso,
-    details.venue,
-    details.location,
-  ];
+  const locationFields = [event.venue, event.city, event.state, event.country];
 
-  return fields.every((field) => typeof field === "string");
-}
-
-function isValidEvent(event) {
   return (
-    isPlainObject(event) &&
     isValidNonEmptyString(event.title) &&
     isValidNonEmptyString(event.link) &&
     typeof event.mainCardStartIso === "string" &&
     typeof event.prelimsStartIso === "string" &&
-    isValidEventDetail(event.details) &&
+    locationFields.every((field) => typeof field === "string") &&
     Array.isArray(event.fights) &&
     event.fights.every(isValidFight)
   );

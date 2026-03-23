@@ -125,16 +125,38 @@ function parseLocation(locationText = "") {
     .map((part) => normalizeText(part))
     .filter(Boolean);
 
-  if (parts.length >= 2) {
+  if (parts.length >= 4) {
     return {
       venue: parts[0],
-      location: parts.slice(1).join(", "),
+      city: parts[1],
+      state: parts.slice(2, -1).join(", "),
+      country: parts[parts.length - 1],
+    };
+  }
+
+  if (parts.length === 3) {
+    return {
+      venue: parts[0],
+      city: parts[1],
+      state: "",
+      country: parts[2],
+    };
+  }
+
+  if (parts.length === 2) {
+    return {
+      venue: parts[0],
+      city: parts[1],
+      state: "",
+      country: "",
     };
   }
 
   return {
     venue: normalizeText(locationText),
-    location: "",
+    city: "",
+    state: "",
+    country: "",
   };
 }
 
@@ -216,7 +238,7 @@ async function scrapeEvent(url) {
   const headline = normalizeText($(".c-hero__headline").first().text());
   const { mainCard, prelims } = getEventTimes($);
   const venueText = normalizeText($(".hero-fixed-bar__place").first().text());
-  const { venue, location } = parseLocation(venueText);
+  const { venue, city, state, country } = parseLocation(venueText);
 
   const title =
     promotion && headline ? `${promotion}: ${headline}` : promotion || headline;
@@ -229,7 +251,9 @@ async function scrapeEvent(url) {
     prelimsStartIso: prelims.iso,
     link: url,
     venue,
-    location,
+    city,
+    state,
+    country,
     fights,
   };
 }
