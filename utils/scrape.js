@@ -120,7 +120,45 @@ function toAbsoluteUrl(url = "") {
 }
 
 function parseLocation(locationText = "") {
-  const parts = locationText
+  const lines = locationText
+    .split(/\r?\n/)
+    .map((part) => normalizeText(part))
+    .filter(Boolean);
+
+  if (lines.length > 1) {
+    const venue = lines[0].replace(/,\s*$/, "");
+    const remainder = lines
+      .slice(1)
+      .flatMap((part) => part.split(","))
+      .map((part) => normalizeText(part))
+      .filter(Boolean);
+
+    if (remainder.length >= 3) {
+      return {
+        venue,
+        city: remainder[0],
+        country: remainder[remainder.length - 1],
+      };
+    }
+
+    if (remainder.length === 2) {
+      return {
+        venue,
+        city: remainder[0],
+        country: remainder[1],
+      };
+    }
+
+    if (remainder.length === 1) {
+      return {
+        venue,
+        city: remainder[0],
+        country: "",
+      };
+    }
+  }
+
+  const parts = normalizeText(locationText)
     .split(",")
     .map((part) => normalizeText(part))
     .filter(Boolean);
@@ -129,7 +167,6 @@ function parseLocation(locationText = "") {
     return {
       venue: parts[0],
       city: parts[1],
-      state: parts.slice(2, -1).join(", "),
       country: parts[parts.length - 1],
     };
   }
@@ -138,7 +175,6 @@ function parseLocation(locationText = "") {
     return {
       venue: parts[0],
       city: parts[1],
-      state: "",
       country: parts[2],
     };
   }
@@ -147,7 +183,6 @@ function parseLocation(locationText = "") {
     return {
       venue: parts[0],
       city: parts[1],
-      state: "",
       country: "",
     };
   }
@@ -155,7 +190,6 @@ function parseLocation(locationText = "") {
   return {
     venue: normalizeText(locationText),
     city: "",
-    state: "",
     country: "",
   };
 }
@@ -237,8 +271,8 @@ async function scrapeEvent(url) {
   const promotion = normalizeText($(".field--name-node-title").first().text());
   const headline = normalizeText($(".c-hero__headline").first().text());
   const { mainCard, prelims } = getEventTimes($);
-  const venueText = normalizeText($(".hero-fixed-bar__place").first().text());
-  const { venue, city, state, country } = parseLocation(venueText);
+  const venueText = $(".hero-fixed-bar__place").first().text();
+  const { venue, city, country } = parseLocation(venueText);
 
   const title =
     promotion && headline ? `${promotion}: ${headline}` : promotion || headline;
@@ -252,7 +286,6 @@ async function scrapeEvent(url) {
     link: url,
     venue,
     city,
-    state,
     country,
     fights,
   };
