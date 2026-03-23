@@ -264,7 +264,7 @@ function parseEventFights($, link) {
   return inferCardBreakdown(link, fallbackFights);
 }
 
-async function scrapeEvent(url) {
+async function scrapeEvent(url, locationDetails = {}) {
   const html = await fetchHtml(url);
   const $ = cheerio.load(html);
 
@@ -272,7 +272,10 @@ async function scrapeEvent(url) {
   const headline = normalizeText($(".c-hero__headline").first().text());
   const { mainCard, prelims } = getEventTimes($);
   const venueText = $(".hero-fixed-bar__place").first().text();
-  const { venue, city, country } = parseLocation(venueText);
+  const parsedLocation = parseLocation(venueText);
+  const venue = locationDetails.venue || parsedLocation.venue;
+  const city = locationDetails.city || parsedLocation.city;
+  const country = locationDetails.country || parsedLocation.country;
 
   const title =
     promotion && headline ? `${promotion}: ${headline}` : promotion || headline;
@@ -291,40 +294,54 @@ async function scrapeEvent(url) {
   };
 }
 
-function extractUpcomingEventLinks($) {
-  const eventLinks = [];
+function extractUpcomingEvents($) {
+  const events = [];
 
   $("#events-list-upcoming .c-card-event--result").each((index, el) => {
     const card = $(el);
     const relativeUrl = card.find('a[href*="/event/"]').first().attr("href");
     const link = toAbsoluteUrl(relativeUrl);
+    const venue = normalizeText(
+      card.find(".field--name-taxonomy-term-title").first().text()
+    );
+    const city = normalizeText(card.find(".field--name-location .locality").first().text());
+    const country = normalizeText(
+      card.find(".field--name-location .country").first().text()
+    );
 
-    if (!link || eventLinks.includes(link)) {
+    if (!link || events.some((event) => event.link === link)) {
       return;
     }
 
-    eventLinks.push(link);
+    events.push({
+      link,
+      venue,
+      city,
+      country,
+    });
   });
 
-  return eventLinks;
+  return events;
 }
 
 async function scrape() {
-  const eventLinks = [];
+  const eventsFromListing = [];
   let page = 0;
 
   while (true) {
     const url = page === 0 ? `${baseUrl}/events` : `${baseUrl}/events?page=${page}`;
     const text = await fetchHtml(url);
     const $ = cheerio.load(text);
-    const pageLinks = extractUpcomingEventLinks($);
-    const newLinks = pageLinks.filter((link) => !eventLinks.includes(link));
+    const pageEvents = extractUpcomingEvents($);
+    const newEvents = pageEvents.filter(
+      (event) => !eventsFromListing.some((existingEvent) => existingEvent.link === event.link)
+    );
 
-    if (!newLinks.length) {
+    if (!newEvents.length) {
       const title = normalizeText($("title").first().text());
       const bodySnippet = getHtmlSnippet($("body").text() || text);
 
-      if (!eventLinks.length) {
+      if (!eventsFromListing.length) {
         throw new Error(
           `no UFC events found on listing page; url=${url}; title="${title}"; snippet="${bodySnippet}"`
         );
@@ -333,7 +350,7 @@ async function scrape() {
       break;
     }
 
-    eventLinks.push(...newLinks);
+    eventsFromListing.push(...newEvents);
 
     const hasMorePages = $("#events-list-upcoming .pager a[rel='next']").length > 0;
 
@@ -346,8 +363,8 @@ async function scrape() {
 
   const events = [];
 
-  for (const link of eventLinks) {
-    const event = await scrapeEvent(link);
+  for (const listingEvent of eventsFromListing) {
+    const event = await scrapeEvent(listingEvent.link, listingEvent);
     events.push(event);
   }
 
