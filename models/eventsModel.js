@@ -61,7 +61,17 @@ const eventSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
-    location: {
+    city: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    state: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    country: {
       type: String,
       default: "",
       trim: true,
