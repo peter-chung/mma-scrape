@@ -275,6 +275,7 @@ async function scrapeEvent(url, locationDetails = {}) {
   const parsedLocation = parseLocation(venueText);
   const venue = locationDetails.venue || parsedLocation.venue;
   const city = locationDetails.city || parsedLocation.city;
+  const state = locationDetails.state || "";
   const country = locationDetails.country || parsedLocation.country;
 
   const title =
@@ -289,6 +290,7 @@ async function scrapeEvent(url, locationDetails = {}) {
     link: url,
     venue,
     city,
+    state,
     country,
     fights,
   };
@@ -305,6 +307,9 @@ function extractUpcomingEvents($) {
       card.find(".field--name-taxonomy-term-title").first().text()
     );
     const city = normalizeText(card.find(".field--name-location .locality").first().text());
+    const state = normalizeText(
+      card.find(".field--name-location .administrative-area").first().text()
+    );
     const country = normalizeText(
       card.find(".field--name-location .country").first().text()
     );
@@ -317,6 +322,7 @@ function extractUpcomingEvents($) {
       link,
       venue,
       city,
+      state,
       country,
     });
   });
