@@ -102,7 +102,7 @@ function isValidEvent(event) {
     return false;
   }
 
-  const locationFields = [event.venue, event.city, event.country];
+  const locationFields = [event.venue, event.city, event.state, event.country];
 
   return (
     isValidNonEmptyString(event.title) &&
