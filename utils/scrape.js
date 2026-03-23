@@ -7,6 +7,16 @@ const requestHeaders = {
   Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "en-US,en;q=0.9",
 };
+const botProtectionPatterns = [
+  /captcha/i,
+  /cloudflare/i,
+  /attention required/i,
+  /verify you are human/i,
+  /are you human/i,
+  /bot detection/i,
+  /access denied/i,
+  /challenge-platform/i,
+];
 
 function normalizeText(value = "") {
   return value.replace(/\s+/g, " ").trim();
@@ -72,14 +82,35 @@ function getEventTimes($) {
   };
 }
 
+function getHtmlSnippet(html = "", maxLength = 300) {
+  return normalizeText(html).slice(0, maxLength);
+}
+
+function detectBotProtection(html = "") {
+  return botProtectionPatterns.find((pattern) => pattern.test(html)) || null;
+}
+
 async function fetchHtml(url) {
   const response = await fetch(url, { headers: requestHeaders });
+  const contentType = response.headers.get("content-type") || "";
+  const finalUrl = response.url || url;
 
   if (!response.ok) {
-    throw new Error(`request failed for ${url}: ${response.status}`);
+    throw new Error(
+      `request failed for ${url}: ${response.status} ${response.statusText}; finalUrl=${finalUrl}; contentType=${contentType}`
+    );
   }
 
-  return response.text();
+  const html = await response.text();
+  const botProtectionPattern = detectBotProtection(html);
+
+  if (botProtectionPattern) {
+    throw new Error(
+      `likely bot protection for ${url}; matched=${botProtectionPattern}; status=${response.status}; finalUrl=${finalUrl}; contentType=${contentType}; snippet="${getHtmlSnippet(html)}"`
+    );
+  }
+
+  return html;
 }
 
 function toAbsoluteUrl(url = "") {
@@ -233,6 +264,15 @@ async function scrape() {
     const newLinks = pageLinks.filter((link) => !eventLinks.includes(link));
 
     if (!newLinks.length) {
+      const title = normalizeText($("title").first().text());
+      const bodySnippet = getHtmlSnippet($("body").text() || text);
+
+      if (!eventLinks.length) {
+        throw new Error(
+          `no UFC events found on listing page; url=${url}; title="${title}"; snippet="${bodySnippet}"`
+        );
+      }
+
       break;
     }
 
@@ -245,10 +285,6 @@ async function scrape() {
     }
 
     page += 1;
-  }
-
-  if (!eventLinks.length) {
-    throw new Error("no UFC events found on listing page");
   }
 
   const events = [];
