@@ -21,9 +21,16 @@ The following technologies are used:
 The /events endpoint contains an array of MMA events with examples of some of the data that could be found below:
 
 - title
-- dateTime
+- mainCardStartIso
+- prelimsStartIso
+- earlyPrelimsStartIso
 - venue
 - city
 - state
 - country
 - array of fights
+
+Each fight may include:
+
+- cardSection (`main`, `prelims`, `early_prelims`, or `null`)
+- sourceCardSegment (raw source value such as `Main`, `Prelims1`, or `Prelims2`)
