@@ -89,9 +89,14 @@ function isValidFighter(fighter) {
 }
 
 function isValidFight(fight) {
+  const validCardSections = [null, "main", "prelims", "early_prelims"];
+  const isValidSourceCardSegment =
+    fight.sourceCardSegment === null || typeof fight.sourceCardSegment === "string";
+
   return (
     isPlainObject(fight) &&
-    typeof fight.isMainCard === "boolean" &&
+    validCardSections.includes(fight.cardSection ?? null) &&
+    isValidSourceCardSegment &&
     isValidFighter(fight.fighter1) &&
     isValidFighter(fight.fighter2)
   );
@@ -109,6 +114,7 @@ function isValidEvent(event) {
     isValidNonEmptyString(event.link) &&
     typeof event.mainCardStartIso === "string" &&
     typeof event.prelimsStartIso === "string" &&
+    typeof event.earlyPrelimsStartIso === "string" &&
     locationFields.every((field) => typeof field === "string") &&
     Array.isArray(event.fights) &&
     event.fights.every(isValidFight)
