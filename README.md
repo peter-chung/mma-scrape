@@ -1,6 +1,6 @@
 # MMA Events API
 
-MMA Events API scrapes ufc.com for UFC events along with the specific event information such as fights, venue, city, state, country, and start times. The API is intended to be used for a website to display this information in an easily digestible manner.
+MMA Events API pulls UFC events from ESPN's public scoreboard API along with the specific event information such as fights, venue, city, state, country, and start times. The API is intended to be used for a website to display this information in an easily digestible manner.
 
 The API can be found at https://mma-events-api.vercel.app/events  
 My accompanying website can be found at https://fyte-center.vercel.app/
@@ -9,7 +9,6 @@ My accompanying website can be found at https://fyte-center.vercel.app/
 
 The following technologies are used:
 
-- Cheerio - web scraping
 - MongoDB - NoSQL data storage
 - Mongoose - object data modeling
 - Express - back-end framework
