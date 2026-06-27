@@ -117,11 +117,14 @@ function parseEventFights(competitions = []) {
   const groupCount = groupIndexByStartTime.size;
 
   const fights = competitions
-    .map((competition) =>
-      buildFight(
-        competition,
-        getCardSectionForGroup(groupIndexByStartTime.get(competition.date), groupCount)
-      )
+    .map((competition, index) => ({
+      competition,
+      index,
+      groupIndex: groupIndexByStartTime.get(competition.date),
+    }))
+    .sort((left, right) => right.groupIndex - left.groupIndex || right.index - left.index)
+    .map(({ competition, groupIndex }) =>
+      buildFight(competition, getCardSectionForGroup(groupIndex, groupCount))
     )
     .filter(Boolean);
 
