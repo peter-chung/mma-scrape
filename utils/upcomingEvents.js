@@ -44,7 +44,9 @@ async function getUpcomingEvents() {
            fs.corner, fr.fighter_id, fr.link as fighter_link,
            nullif(trim(concat_ws(' ', fr.first_name, fr.last_name)), '') as fighter_name
     from ${table("events")} e
-    left join ${table("fights")} f on f.event_id = e.event_id
+    -- inner join: an event with no fights has nothing to show, so it's left
+    -- out (the old scraper never returned empty cards either)
+    join ${table("fights")} f on f.event_id = e.event_id
     left join ${table("fight_stats")} fs on fs.fight_id = f.fight_id
     left join ${table("fighters")} fr on fr.fighter_id = fs.fighter_id
     where not e.completed
@@ -72,10 +74,6 @@ async function getUpcomingEvents() {
         country: row.country || "",
         fightsById: new Map(),
       });
-    }
-
-    if (!row.fight_id) {
-      return;
     }
 
     const fightsById = events.get(row.event_id).fightsById;

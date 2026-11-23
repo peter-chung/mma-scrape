@@ -186,32 +186,47 @@ async function syncEspnSegments() {
   const dbEvents = await loadUpcomingDbEvents(getPool());
   const results = matchEventSegments(dbEvents, espnEvents);
 
-  await withTransaction(async (client) => {
-    for (const result of results) {
+  // Three set-based statements regardless of card count (one round trip each),
+  // instead of one UPDATE per event and per fight.
+  const fightSegments = results.flatMap((result) => result.fightSegments);
+
+  if (results.length) {
+    await withTransaction(async (client) => {
       await client.query(
-        `update ${table("events")}
-           set main_card_start = $2, prelims_start = $3, early_prelims_start = $4,
+        `update ${table("events")} as e
+           set main_card_start = v.main_card_start,
+               prelims_start = v.prelims_start,
+               early_prelims_start = v.early_prelims_start,
                segments_synced_at = now()
-         where event_id = $1`,
+         from unnest($1::text[], $2::timestamptz[], $3::timestamptz[], $4::timestamptz[])
+           as v(event_id, main_card_start, prelims_start, early_prelims_start)
+         where e.event_id = v.event_id`,
         [
-          result.eventId,
-          result.segmentStarts.main,
-          result.segmentStarts.prelims,
-          result.segmentStarts.early_prelims,
+          results.map((result) => result.eventId),
+          results.map((result) => result.segmentStarts.main),
+          results.map((result) => result.segmentStarts.prelims),
+          results.map((result) => result.segmentStarts.early_prelims),
         ]
       );
       await client.query(
-        `update ${table("fights")} set card_segment = null, segment_start = null where event_id = $1`,
-        [result.eventId]
+        `update ${table("fights")} set card_segment = null, segment_start = null
+         where event_id = any($1)`,
+        [results.map((result) => result.eventId)]
       );
-      for (const fight of result.fightSegments) {
-        await client.query(
-          `update ${table("fights")} set card_segment = $2, segment_start = $3 where fight_id = $1`,
-          [fight.fightId, fight.segment, fight.startTime]
-        );
-      }
-    }
-  });
+      await client.query(
+        `update ${table("fights")} as f
+           set card_segment = v.card_segment, segment_start = v.segment_start
+         from unnest($1::text[], $2::text[], $3::timestamptz[])
+           as v(fight_id, card_segment, segment_start)
+         where f.fight_id = v.fight_id`,
+        [
+          fightSegments.map((fight) => fight.fightId),
+          fightSegments.map((fight) => fight.segment),
+          fightSegments.map((fight) => fight.startTime),
+        ]
+      );
+    });
+  }
 
   return {
     espnEvents: espnEvents.length,

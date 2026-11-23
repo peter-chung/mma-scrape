@@ -64,17 +64,6 @@ function requireApiKey(req, res, next) {
   return next();
 }
 
-// Vercel Cron sends `Authorization: Bearer $CRON_SECRET` on its GET requests.
-function requireCronSecret(req, res, next) {
-  const expected = process.env.CRON_SECRET;
-
-  if (!expected || !safeEqual(req.get("authorization"), `Bearer ${expected}`)) {
-    return res.status(401).json({ message: "unauthorized" });
-  }
-
-  return next();
-}
-
 async function handleSync(req, res) {
   try {
     console.log("sync started");
@@ -93,10 +82,9 @@ app.disable("x-powered-by");
 app.use(cors({ origin: corsOriginValidator }));
 app.use(express.json({ limit: "100kb" }));
 
-// Nightly sync: BigQuery (last 30 days + upcoming) → Postgres, then ESPN segment times.
-app.get("/api/cron/sync", requireCronSecret, handleSync);
-
-// Same sync, triggered manually.
+// Nightly sync: BigQuery (last 30 days + upcoming) → Postgres, then ESPN
+// segment times. Triggered daily by cron-job.org (POST with x-api-key), which
+// also alerts on failure; can be run by hand the same way.
 app.post("/sync", requireApiKey, handleSync);
 
 // Upcoming events in the legacy snapshot shape fyte-center reads today.

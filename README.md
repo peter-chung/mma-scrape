@@ -46,8 +46,8 @@ Events the warehouse marks `event_status = 'cancelled'` (future-dated, but gone 
 upcoming-events page) are skipped, and deleted from Postgres if an earlier sync stored them.
 This needs `fct_fights` built with `event_status` (ufc-data-pipeline).
 
-On Vercel, the nightly cron calls `GET /api/cron/sync` (authorized with `CRON_SECRET`).
-`POST /sync` with an `x-api-key` header triggers the same sync manually.
+In production, a daily [cron-job.org](https://cron-job.org) job calls `POST /sync` with an
+`x-api-key` header (cron-job.org emails on failure). The same request triggers a sync by hand.
 
 See `.env.example` for the environment variables.
 
