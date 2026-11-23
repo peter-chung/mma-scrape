@@ -1,17 +1,18 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const envPath = path.join(__dirname, ".env.local");
 
 require("dotenv").config(
   fs.existsSync(envPath) ? { path: envPath } : undefined
 );
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
 const app = express();
 
-const Events = require("./models/eventsModel");
-const scrape = require("./utils/scrape");
+const { getRequiredEnv } = require("./utils/db");
+const runSync = require("./utils/runSync");
+const getUpcomingEvents = require("./utils/upcomingEvents");
 
 const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:3000",
@@ -25,22 +26,13 @@ function sendServerError(res, err) {
   return res.status(500).json({ message: err.message });
 }
 
-function isValidObjectId(id) {
-  return mongoose.Types.ObjectId.isValid(id);
-}
-
-function getRequiredEnv(name) {
-  const value = process.env[name];
-
-  if (!value) {
-    throw new Error(`Missing required environment variable ${name}`);
+function safeEqual(provided, expected) {
+  if (!provided || !expected) {
+    return false;
   }
-
-  return value;
-}
-
-function getApiKey(req) {
-  return req.get("x-api-key") || req.body?.key;
+  const a = Buffer.from(String(provided));
+  const b = Buffer.from(String(expected));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function parseAllowedOrigins() {
@@ -63,216 +55,61 @@ function corsOriginValidator(origin, callback) {
 }
 
 function requireApiKey(req, res, next) {
-  const apiKey = getApiKey(req);
+  const apiKey = req.get("x-api-key") || req.body?.key;
 
-  if (!apiKey || apiKey !== process.env.ADMIN_API_KEY) {
+  if (!safeEqual(apiKey, process.env.ADMIN_API_KEY)) {
     return res.status(401).json({ message: "invalid API key" });
   }
 
   return next();
 }
 
-function isPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+// Vercel Cron sends `Authorization: Bearer $CRON_SECRET` on its GET requests.
+function requireCronSecret(req, res, next) {
+  const expected = process.env.CRON_SECRET;
 
-function isValidNonEmptyString(value) {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
-function isValidFighter(fighter) {
-  return (
-    isPlainObject(fighter) &&
-    isValidNonEmptyString(fighter.name) &&
-    isValidNonEmptyString(fighter.link)
-  );
-}
-
-function isValidFight(fight) {
-  const validCardSections = [null, "main", "prelims", "early_prelims"];
-  const isValidSourceCardSegment =
-    fight.sourceCardSegment === null || typeof fight.sourceCardSegment === "string";
-
-  return (
-    isPlainObject(fight) &&
-    validCardSections.includes(fight.cardSection ?? null) &&
-    isValidSourceCardSegment &&
-    isValidFighter(fight.fighter1) &&
-    isValidFighter(fight.fighter2)
-  );
-}
-
-function isValidEvent(event) {
-  if (!isPlainObject(event)) {
-    return false;
-  }
-
-  const locationFields = [event.venue, event.city, event.state, event.country];
-
-  return (
-    isValidNonEmptyString(event.title) &&
-    isValidNonEmptyString(event.link) &&
-    typeof event.mainCardStartIso === "string" &&
-    typeof event.prelimsStartIso === "string" &&
-    typeof event.earlyPrelimsStartIso === "string" &&
-    locationFields.every((field) => typeof field === "string") &&
-    Array.isArray(event.fights) &&
-    event.fights.every(isValidFight)
-  );
-}
-
-function validateEventsPayload(req, res, next) {
-  const { data } = req.body;
-
-  if (!Array.isArray(data) || !data.every(isValidEvent)) {
-    return res.status(400).json({
-      message:
-        "invalid events payload; expected { data: [event] } with typed event objects",
-    });
+  if (!expected || !safeEqual(req.get("authorization"), `Bearer ${expected}`)) {
+    return res.status(401).json({ message: "unauthorized" });
   }
 
   return next();
 }
 
-getRequiredEnv("DATABASE_URL");
+async function handleSync(req, res) {
+  try {
+    console.log("sync started");
+    const summary = await runSync();
+    console.log("sync finished", JSON.stringify(summary));
+    return res.status(200).json(summary);
+  } catch (err) {
+    return sendServerError(res, err);
+  }
+}
+
+getRequiredEnv("SUPABASE_DB_URL");
 process.env.ADMIN_API_KEY = process.env.ADMIN_API_KEY || getRequiredEnv("SCRAPER_KEY");
 
-// middleware to configure cors
 app.disable("x-powered-by");
-app.use(
-  cors({
-    origin: corsOriginValidator,
-  })
-);
-
-// middleware for app to use json
+app.use(cors({ origin: corsOriginValidator }));
 app.use(express.json({ limit: "100kb" }));
 
-// post endpoint to trigger mmaEventsScrape
-app.post("/scrape", requireApiKey, async (req, res) => {
-  // scrape and update DB
-  try {
-    console.log("scraper called");
-    const scrapedData = await scrape();
-    console.log("scraper successful");
-    const response = await Events.findOneAndUpdate({}, scrapedData, {
-      new: true,
-      upsert: true,
-      setDefaultsOnInsert: true,
-    });
-    res.status(200).json(response);
-  } catch (err) {
-    return sendServerError(res, err);
-  }
-});
+// Nightly sync: BigQuery (last 30 days + upcoming) → Postgres, then ESPN segment times.
+app.get("/api/cron/sync", requireCronSecret, handleSync);
 
-// create events entry
-app.post("/events", requireApiKey, validateEventsPayload, async (req, res) => {
-  try {
-    const events = await Events.create(req.body);
-    return res.status(201).json(events);
-  } catch (err) {
-    return sendServerError(res, err);
-  }
-});
+// Same sync, triggered manually.
+app.post("/sync", requireApiKey, handleSync);
 
-// update an event
-app.put(
-  "/events/:id",
-  requireApiKey,
-  validateEventsPayload,
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-
-      if (!isValidObjectId(id)) {
-        return res.status(400).json({ message: `invalid event ID ${id}` });
-      }
-
-      const updatedEvent = await Events.findByIdAndUpdate(id, req.body, {
-        new: true,
-        runValidators: true,
-      });
-
-      // cannot find event in database
-      if (!updatedEvent) {
-        return res
-          .status(404)
-          .json({ message: `cannot find any events with ID ${id}` });
-      }
-
-      return res.status(200).json(updatedEvent);
-    } catch (err) {
-      return sendServerError(res, err);
-    }
-  }
-);
-
-// delete an event
-app.delete("/events/:id", requireApiKey, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({ message: `invalid event ID ${id}` });
-    }
-
-    const event = await Events.findByIdAndDelete(id);
-
-    // cannot find event in database
-    if (!event) {
-      return res
-        .status(404)
-        .json({ message: `cannot find any events with ID ${id}` });
-    }
-
-    return res.status(200).json(event);
-  } catch (err) {
-    return sendServerError(res, err);
-  }
-});
-
-// get all events
+// Upcoming events in the legacy snapshot shape fyte-center reads today.
 app.get("/events", async (req, res) => {
   try {
-    const events = await Events.find({});
-    return res.status(200).json(events);
+    return res.status(200).json(await getUpcomingEvents());
   } catch (err) {
     return sendServerError(res, err);
   }
 });
 
-// get event by id
-app.get("/events/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({ message: `invalid event ID ${id}` });
-    }
-
-    const event = await Events.findById(id);
-
-    if (!event) {
-      return res
-        .status(404)
-        .json({ message: `cannot find any events with ID ${id}` });
-    }
-
-    return res.status(200).json(event);
-  } catch (err) {
-    return sendServerError(res, err);
-  }
+app.listen(3000, () => {
+  console.log("Node API app is running on port 3000");
 });
 
-mongoose
-  .connect(process.env.DATABASE_URL)
-  .then(() => {
-    app.listen(3000, () => {
-      console.log("Node API app is running on port 3000");
-    });
-    console.log("connected to MongoDB");
-  })
-  .catch((err) => {
-    console.log(err);
-  });
+module.exports = app;

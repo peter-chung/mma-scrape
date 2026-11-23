@@ -1,3 +1,7 @@
+// ESPN's only job now: for each upcoming UFC event, say which broadcast
+// segment (main / prelims / early_prelims) each fight is on and when that
+// segment starts. Events, matchups and stats all come from BigQuery.
+
 const requestHeaders = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
@@ -5,7 +9,6 @@ const requestHeaders = {
 };
 
 const scoreboardApiUrl = "https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard";
-const fighterProfileBaseUrl = "https://www.espn.com/mma/fighter/_/id";
 const upcomingWindowDays = 365;
 const scoreboardEventLimit = 300;
 const mainCardSection = "main";
@@ -26,16 +29,7 @@ function toIsoString(value = "") {
   }
 
   const date = new Date(normalizedValue);
-  return Number.isNaN(date.getTime()) ? normalizedValue : date.toISOString();
-}
-
-function slugifyName(name = "") {
-  return normalizeText(name)
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function getUpcomingDateRange(days) {
@@ -66,39 +60,16 @@ async function fetchJson(url) {
   return response.json();
 }
 
-function buildFighter(competitor = {}) {
+function getFighterName(competitor = {}) {
   const athlete = competitor.athlete || {};
-  const id = competitor.id;
   const name = normalizeText(athlete.fullName || athlete.displayName || "");
 
-  if (!id || !name || /^(opponent\s+)?tba$/i.test(name)) {
-    return null;
-  }
-
-  return {
-    name,
-    link: `${fighterProfileBaseUrl}/${id}/${slugifyName(name)}`,
-  };
+  return !name || /^(opponent\s+)?tba$/i.test(name) ? null : name;
 }
 
-function buildFight(competition = {}, cardSection) {
-  const fighters = [...(competition.competitors || [])]
-    .sort((left, right) => (left.order ?? 99) - (right.order ?? 99))
-    .map(buildFighter)
-    .filter(Boolean);
-
-  if (fighters.length < 2) {
-    return null;
-  }
-
-  return {
-    cardSection,
-    sourceCardSegment: null,
-    fighter1: fighters[0],
-    fighter2: fighters[1],
-  };
-}
-
+// ESPN has no explicit segment field; fights on the same segment share a
+// start time. The latest start time is the main card, the one before it the
+// prelims, and anything earlier the early prelims.
 function getStartTimeGroupIndexes(competitions = []) {
   const startTimes = [...new Set(competitions.map((competition) => competition.date))].sort();
   return new Map(startTimes.map((startTime, index) => [startTime, index]));
@@ -112,43 +83,49 @@ function getCardSectionForGroup(groupIndex, groupCount) {
   return earlyPrelimsSection;
 }
 
-function parseEventFights(competitions = []) {
+function parseEventSegments(event = {}) {
+  const competitions = event.competitions || [];
   const groupIndexByStartTime = getStartTimeGroupIndexes(competitions);
   const groupCount = groupIndexByStartTime.size;
 
   const fights = competitions
-    .map((competition, index) => ({
-      competition,
-      index,
-      groupIndex: groupIndexByStartTime.get(competition.date),
-    }))
-    .sort((left, right) => right.groupIndex - left.groupIndex || right.index - left.index)
-    .map(({ competition, groupIndex }) =>
-      buildFight(competition, getCardSectionForGroup(groupIndex, groupCount))
-    )
+    .map((competition) => {
+      const names = [...(competition.competitors || [])]
+        .sort((left, right) => (left.order ?? 99) - (right.order ?? 99))
+        .map(getFighterName)
+        .filter(Boolean);
+
+      if (names.length < 2) {
+        return null;
+      }
+
+      return {
+        fighter1Name: names[0],
+        fighter2Name: names[1],
+        segment: getCardSectionForGroup(groupIndexByStartTime.get(competition.date), groupCount),
+        startTime: toIsoString(competition.date),
+      };
+    })
     .filter(Boolean);
 
-  const startIsoBySection = {};
+  const segmentStarts = {};
   groupIndexByStartTime.forEach((groupIndex, startTime) => {
-    startIsoBySection[getCardSectionForGroup(groupIndex, groupCount)] = toIsoString(startTime) || "";
+    segmentStarts[getCardSectionForGroup(groupIndex, groupCount)] = toIsoString(startTime);
   });
 
+  const earliestStart = [...groupIndexByStartTime.keys()][0];
+
   return {
+    espnEventId: event.id,
+    name: normalizeText(event.name),
+    // Earliest fight start (UTC); used for ±1-day date matching.
+    date: toIsoString(earliestStart || event.date),
+    segmentStarts: {
+      main: segmentStarts[mainCardSection] ?? null,
+      prelims: segmentStarts[prelimsSection] ?? null,
+      early_prelims: segmentStarts[earlyPrelimsSection] ?? null,
+    },
     fights,
-    mainCardStartIso: startIsoBySection[mainCardSection] || "",
-    prelimsStartIso: startIsoBySection[prelimsSection] || "",
-    earlyPrelimsStartIso: startIsoBySection[earlyPrelimsSection] || "",
-  };
-}
-
-function parseEventLocation(event = {}) {
-  const venue = event.venues?.[0] || {};
-
-  return {
-    venue: normalizeText(venue.fullName),
-    city: normalizeText(venue.address?.city),
-    state: normalizeText(venue.address?.state),
-    country: normalizeText(venue.address?.country),
   };
 }
 
@@ -156,42 +133,17 @@ function isUpcomingEvent(event = {}) {
   return event.status?.type?.state === "pre";
 }
 
-function parseEvent(event = {}) {
-  const title = normalizeText(event.name);
-  const link = event.links?.[0]?.href || "";
-
-  if (!title || !link) {
-    return null;
-  }
-
-  const { fights, mainCardStartIso, prelimsStartIso, earlyPrelimsStartIso } = parseEventFights(
-    event.competitions
-  );
-
-  return {
-    title,
-    mainCardStartIso,
-    prelimsStartIso,
-    earlyPrelimsStartIso,
-    link,
-    ...parseEventLocation(event),
-    fights,
-  };
-}
-
-async function scrape() {
+/**
+ * @returns {Promise<Array<{espnEventId, name, date, segmentStarts, fights: Array<{fighter1Name, fighter2Name, segment, startTime}>}>>}
+ */
+async function fetchEspnSegments() {
   const url = `${scoreboardApiUrl}?dates=${getUpcomingDateRange(upcomingWindowDays)}&limit=${scoreboardEventLimit}`;
   const payload = await fetchJson(url);
-  const events = (payload.events || [])
+
+  return (payload.events || [])
     .filter(isUpcomingEvent)
-    .map(parseEvent)
-    .filter(Boolean);
-
-  if (!events.length) {
-    throw new Error("event scrape produced no data");
-  }
-
-  return { data: events };
+    .map(parseEventSegments)
+    .filter((event) => event.date && event.fights.length);
 }
 
-module.exports = scrape;
+module.exports = { fetchEspnSegments, parseEventSegments };
