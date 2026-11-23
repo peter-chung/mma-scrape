@@ -65,6 +65,26 @@ test("parseEventSegments groups by start time and skips TBA", () => {
   assert.equal(espnEvent.date, new Date(EARLY).toISOString());
 });
 
+test("parseEventSegments keeps the earliest time when several groups are early prelims", () => {
+  const event = parseEventSegments({
+    id: "4",
+    competitions: [
+      competition("2026-12-12T22:00:00Z", "A One", "B One"),
+      competition("2026-12-12T23:00:00Z", "A Two", "B Two"),
+      competition(PRELIMS, "A Three", "B Three"),
+      competition(MAIN, "A Four", "B Four"),
+    ],
+  });
+
+  assert.equal(event.segmentStarts.early_prelims, new Date("2026-12-12T22:00:00Z").toISOString());
+  assert.equal(event.segmentStarts.prelims, new Date(PRELIMS).toISOString());
+  assert.equal(event.segmentStarts.main, new Date(MAIN).toISOString());
+  assert.deepEqual(
+    event.fights.map((fight) => fight.segment),
+    ["early_prelims", "early_prelims", "prelims", "main"]
+  );
+});
+
 test("matches fights by name pair, either order, leaving the rest unassigned", () => {
   const [result] = matchEventSegments([dbEvent], [espnEvent]);
   const segmentOf = Object.fromEntries(result.fightSegments.map((f) => [f.fightId, f.segment]));

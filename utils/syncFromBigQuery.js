@@ -232,14 +232,39 @@ function toFightRow(row) {
   };
 }
 
+// A corner with no fighter id (opponent not announced yet) gets no row: the
+// fight is still synced, and /events shows that slot as "TBD".
 function toFightStatsRows(row) {
-  return [1, 2].map((corner) => {
-    const stats = { fight_id: row.fight_id, fighter_id: row[`fighter_${corner}_id`], corner };
-    FIGHT_STAT_COLUMNS.forEach((column) => {
-      stats[column] = row[`fighter_${corner}_${column}`];
+  return [1, 2]
+    .filter((corner) => row[`fighter_${corner}_id`])
+    .map((corner) => {
+      const stats = { fight_id: row.fight_id, fighter_id: row[`fighter_${corner}_id`], corner };
+      FIGHT_STAT_COLUMNS.forEach((column) => {
+        stats[column] = row[`fighter_${corner}_${column}`];
+      });
+      return stats;
     });
-    return stats;
-  });
+}
+
+/**
+ * Separates fights of events the warehouse marks 'cancelled' (gone from
+ * ufcstats' schedule) from everything else.
+ */
+function splitCancelledEvents(rows) {
+  if (rows.length && !("event_status" in rows[0])) {
+    throw new Error(
+      "fct_fights has no event_status column; rebuild it in ufc-data-pipeline (dbt run -s stg_events fct_fights)"
+    );
+  }
+
+  const cancelledEventIds = [
+    ...new Set(rows.filter((row) => row.event_status === "cancelled").map((row) => row.event_id)),
+  ];
+
+  return {
+    fightRows: rows.filter((row) => row.event_status !== "cancelled"),
+    cancelledEventIds,
+  };
 }
 
 /**
@@ -253,11 +278,16 @@ async function syncFromBigQuery({ since = isoDateDaysAgo(NIGHTLY_LOOKBACK_DAYS) 
   const bigquery = getBigQueryClient();
   const isBackfill = since === null;
 
-  const fightRows = await queryFights(bigquery, since);
+  const allFightRows = await queryFights(bigquery, since);
 
-  if (!fightRows.length) {
+  if (!allFightRows.length) {
     throw new Error(`BigQuery returned no fights since ${since ?? "the beginning"}`);
   }
+
+  // Cancelled events are never synced, and are deleted below if a previous sync
+  // stored them. Cancelled events are always future-dated, so they're always
+  // inside the nightly window.
+  const { fightRows, cancelledEventIds } = splitCancelledEvents(allFightRows);
 
   const referencedFighterIds = [
     ...new Set(
@@ -318,6 +348,12 @@ async function syncFromBigQuery({ since = isoDateDaysAgo(NIGHTLY_LOOKBACK_DAYS) 
     await client.query(`delete from ${table("fight_stats")} where fight_id = any($1)`, [fightIds]);
     await insertRows(client, "fight_stats", FIGHT_STATS_COLUMNS, fightStats);
 
+    // Events ufcstats dropped from its schedule; fights and fight_stats cascade.
+    const cancelled = await client.query(
+      `delete from ${table("events")} where event_id = any($1)`,
+      [cancelledEventIds]
+    );
+
     return {
       since,
       events: events.length,
@@ -326,10 +362,17 @@ async function syncFromBigQuery({ since = isoDateDaysAgo(NIGHTLY_LOOKBACK_DAYS) 
       fighters: fighters.length,
       stubFightersInserted: stubsInserted,
       fightsRemoved: removed.rowCount,
+      cancelledEventsSkipped: cancelledEventIds.length,
+      cancelledEventsDeleted: cancelled.rowCount,
     };
   });
 
   return summary;
 }
 
-module.exports = { syncFromBigQuery, NIGHTLY_LOOKBACK_DAYS };
+module.exports = {
+  syncFromBigQuery,
+  toFightStatsRows,
+  splitCancelledEvents,
+  NIGHTLY_LOOKBACK_DAYS,
+};

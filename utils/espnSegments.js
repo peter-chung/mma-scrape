@@ -108,9 +108,12 @@ function parseEventSegments(event = {}) {
     })
     .filter(Boolean);
 
+  // Start times are iterated earliest first; keep the first (earliest) time per
+  // section, so if several groups ever map to early_prelims it starts when the
+  // first of them does.
   const segmentStarts = {};
   groupIndexByStartTime.forEach((groupIndex, startTime) => {
-    segmentStarts[getCardSectionForGroup(groupIndex, groupCount)] = toIsoString(startTime);
+    segmentStarts[getCardSectionForGroup(groupIndex, groupCount)] ??= toIsoString(startTime);
   });
 
   const earliestStart = [...groupIndexByStartTime.keys()][0];
