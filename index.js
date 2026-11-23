@@ -10,7 +10,7 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 
-const { getRequiredEnv } = require("./utils/db");
+const { getRequiredEnv, getPool } = require("./utils/db");
 const runSync = require("./utils/runSync");
 const getUpcomingEvents = require("./utils/upcomingEvents");
 
@@ -69,13 +69,21 @@ async function handleSync(req, res) {
     console.log("sync started");
     const summary = await runSync();
     console.log("sync finished", JSON.stringify(summary));
-    return res.status(200).json(summary);
+
+    // The BigQuery sync is saved either way, but a failed or empty ESPN step
+    // answers 500 so cron-job.org's failure email fires. The body still has
+    // the full summary (visible in its job history).
+    const segmentProblems = summary.segments.error || summary.segments.warnings?.length;
+    return res.status(segmentProblems ? 500 : 200).json(summary);
   } catch (err) {
     return sendServerError(res, err);
   }
 }
 
 getRequiredEnv("SUPABASE_DB_URL");
+// Builds the pool (no connection yet) so a bad TLS/env setup fails at startup,
+// e.g. a production deploy without SUPABASE_DB_CA_B64.
+getPool();
 process.env.ADMIN_API_KEY = process.env.ADMIN_API_KEY || getRequiredEnv("SCRAPER_KEY");
 
 app.disable("x-powered-by");
@@ -96,8 +104,13 @@ app.get("/events", async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log("Node API app is running on port 3000");
-});
+// Listen only when run directly (`npm run dev` / `npm start`). On Vercel the
+// exported app is the request handler, and importing this file (e.g. from a
+// test) shouldn't bind a port.
+if (require.main === module) {
+  app.listen(3000, () => {
+    console.log("Node API app is running on port 3000");
+  });
+}
 
 module.exports = app;

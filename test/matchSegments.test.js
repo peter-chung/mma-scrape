@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { matchEventSegments, normalizeName } = require("../utils/matchSegments");
+const { matchEventSegments, normalizeName, segmentWarnings } = require("../utils/matchSegments");
 const { parseEventSegments } = require("../utils/espnSegments");
 
 const MAIN = "2026-12-13T03:00:00Z";
@@ -83,6 +83,35 @@ test("parseEventSegments keeps the earliest time when several groups are early p
     event.fights.map((fight) => fight.segment),
     ["early_prelims", "early_prelims", "prelims", "main"]
   );
+});
+
+test("parseEventSegments ignores a fight with no start time instead of shifting the card", () => {
+  const event = parseEventSegments({
+    id: "5",
+    competitions: [
+      competition(PRELIMS, "A One", "B One"),
+      competition(MAIN, "A Two", "B Two"),
+      competition(undefined, "A Three", "B Three"),
+    ],
+  });
+
+  assert.deepEqual(
+    event.fights.map((fight) => [fight.fighter1Name, fight.segment]),
+    [
+      ["A One", "prelims"],
+      ["A Two", "main"],
+      ["A Three", null],
+    ]
+  );
+  assert.equal(event.segmentStarts.main, new Date(MAIN).toISOString());
+  assert.equal(event.segmentStarts.prelims, new Date(PRELIMS).toISOString());
+});
+
+test("segmentWarnings flags an empty ESPN feed and zero matches, not a single missing card", () => {
+  assert.equal(segmentWarnings(0, 8, 0).length, 1);
+  assert.equal(segmentWarnings(8, 8, 0).length, 1);
+  assert.deepEqual(segmentWarnings(8, 8, 7), []);
+  assert.deepEqual(segmentWarnings(8, 0, 0), []);
 });
 
 test("matches fights by name pair, either order, leaving the rest unassigned", () => {

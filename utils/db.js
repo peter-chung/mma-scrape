@@ -35,14 +35,29 @@ function getRequiredEnv(name) {
   return value;
 }
 
-// Supabase's server certificate chains to Supabase's own root CA, which Node
-// doesn't trust by default. Provide that CA (downloadable from the Supabase
-// dashboard → Database settings) base64-encoded in SUPABASE_DB_CA_B64 to get
-// full verification; without it the connection is still TLS-encrypted, just
-// without certificate verification.
-// `sslmode=disable` in the URL turns TLS off, for a local Postgres only.
+// Vercel sets VERCEL=1 and NODE_ENV=production for deployed functions.
+function isProduction() {
+  return Boolean(process.env.VERCEL) || process.env.NODE_ENV === "production";
+}
+
+/**
+ * TLS settings for the Postgres connection.
+ *
+ * Supabase's server certificate chains to Supabase's own root CA ("Supabase
+ * Root 2021 CA"), which Node doesn't trust by default. SUPABASE_DB_CA_B64 holds
+ * that CA (downloaded from the Supabase dashboard → Database settings → SSL),
+ * base64-encoded; with it the server's certificate and hostname are verified.
+ *
+ * - production: the CA is required; without it the app refuses to start rather
+ *   than send the database password over an unverified connection
+ * - local development without the CA: encrypted but unverified, with a warning
+ * - `sslmode=disable` in the URL: TLS off, for a local Postgres only
+ */
 function buildSslConfig(connectionString) {
   if (new URL(connectionString).searchParams.get("sslmode") === "disable") {
+    if (isProduction()) {
+      throw new Error("sslmode=disable is not allowed in production");
+    }
     return false;
   }
 
@@ -52,6 +67,15 @@ function buildSslConfig(connectionString) {
     return { ca: Buffer.from(caB64, "base64").toString("utf8"), rejectUnauthorized: true };
   }
 
+  if (isProduction()) {
+    throw new Error(
+      "SUPABASE_DB_CA_B64 is required in production (base64 of Supabase's root CA certificate)"
+    );
+  }
+
+  console.warn(
+    "SUPABASE_DB_CA_B64 not set: database TLS certificate is NOT verified (local development only)"
+  );
   return { rejectUnauthorized: false };
 }
 

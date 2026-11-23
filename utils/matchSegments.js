@@ -175,6 +175,25 @@ async function loadUpcomingDbEvents(client) {
 }
 
 /**
+ * Signs the ESPN step is broken rather than just early (a single far-out card
+ * missing from ESPN is normal and not flagged). Non-empty → /sync answers 500.
+ */
+function segmentWarnings(espnEventCount, dbEventCount, matchedEventCount) {
+  const warnings = [];
+
+  if (espnEventCount === 0) {
+    warnings.push("ESPN returned no upcoming UFC events (API change or outage?)");
+  } else if (dbEventCount > 0 && matchedEventCount === 0) {
+    warnings.push(
+      `none of ${dbEventCount} upcoming events matched an ESPN event (date/name matching broken?)`
+    );
+  }
+
+  warnings.forEach((warning) => console.warn(`ESPN segment sync: ${warning}`));
+  return warnings;
+}
+
+/**
  * Fetch ESPN segments and write them onto upcoming Postgres fights.
  * For each matched event, every fight's segment is recomputed: matched fights
  * get ESPN's segment/start, the rest are cleared to null ("Unassigned Fights"),
@@ -232,6 +251,7 @@ async function syncEspnSegments() {
     espnEvents: espnEvents.length,
     upcomingDbEvents: dbEvents.length,
     matchedEvents: results.length,
+    warnings: segmentWarnings(espnEvents.length, dbEvents.length, results.length),
     matchedFights: results.reduce((sum, result) => sum + result.fightSegments.length, 0),
     unmatchedFights: results.reduce((sum, result) => sum + result.unmatchedFightIds.length, 0),
     unmatchedEvents: dbEvents
@@ -240,4 +260,4 @@ async function syncEspnSegments() {
   };
 }
 
-module.exports = { syncEspnSegments, matchEventSegments, normalizeName };
+module.exports = { syncEspnSegments, matchEventSegments, normalizeName, segmentWarnings };

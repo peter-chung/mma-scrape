@@ -69,9 +69,18 @@ function getFighterName(competitor = {}) {
 
 // ESPN has no explicit segment field; fights on the same segment share a
 // start time. The latest start time is the main card, the one before it the
-// prelims, and anything earlier the early prelims.
+// prelims, and anything earlier the early prelims. Fights with a missing or
+// unparseable date are left out of the grouping: otherwise sort() would put
+// `undefined` last, labelling that fight the main card and pushing the real
+// main card down to prelims.
 function getStartTimeGroupIndexes(competitions = []) {
-  const startTimes = [...new Set(competitions.map((competition) => competition.date))].sort();
+  const startTimes = [
+    ...new Set(
+      competitions
+        .map((competition) => competition.date)
+        .filter((date) => toIsoString(date) !== null)
+    ),
+  ].sort();
   return new Map(startTimes.map((startTime, index) => [startTime, index]));
 }
 
@@ -99,10 +108,13 @@ function parseEventSegments(event = {}) {
         return null;
       }
 
+      const groupIndex = groupIndexByStartTime.get(competition.date);
+
       return {
         fighter1Name: names[0],
         fighter2Name: names[1],
-        segment: getCardSectionForGroup(groupIndexByStartTime.get(competition.date), groupCount),
+        // no usable start time → no segment ("Unassigned Fights")
+        segment: groupIndex === undefined ? null : getCardSectionForGroup(groupIndex, groupCount),
         startTime: toIsoString(competition.date),
       };
     })
