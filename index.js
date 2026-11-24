@@ -7,19 +7,10 @@ require("dotenv").config(
   fs.existsSync(envPath) ? { path: envPath } : undefined
 );
 const express = require("express");
-const cors = require("cors");
 const app = express();
 
 const { getRequiredEnv, getPool } = require("./utils/db");
 const runSync = require("./utils/runSync");
-const getUpcomingEvents = require("./utils/upcomingEvents");
-
-const DEFAULT_ALLOWED_ORIGINS = [
-  "http://localhost:3000",
-  "http://localhost:5173",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:5173",
-];
 
 function sendServerError(res, err) {
   console.log(err.message);
@@ -33,25 +24,6 @@ function safeEqual(provided, expected) {
   const a = Buffer.from(String(provided));
   const b = Buffer.from(String(expected));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
-}
-
-function parseAllowedOrigins() {
-  const configuredOrigins = process.env.CORS_ORIGIN
-    ?.split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-
-  return configuredOrigins?.length ? configuredOrigins : DEFAULT_ALLOWED_ORIGINS;
-}
-
-function corsOriginValidator(origin, callback) {
-  const allowedOrigins = parseAllowedOrigins();
-
-  if (!origin || allowedOrigins.includes(origin)) {
-    return callback(null, true);
-  }
-
-  return callback(new Error("CORS origin not allowed"));
 }
 
 function requireApiKey(req, res, next) {
@@ -87,22 +59,12 @@ getPool();
 process.env.ADMIN_API_KEY = process.env.ADMIN_API_KEY || getRequiredEnv("SCRAPER_KEY");
 
 app.disable("x-powered-by");
-app.use(cors({ origin: corsOriginValidator }));
 app.use(express.json({ limit: "100kb" }));
 
 // Nightly sync: BigQuery (last 30 days + upcoming) → Postgres, then ESPN
 // segment times. Triggered daily by cron-job.org (POST with x-api-key), which
 // also alerts on failure; can be run by hand the same way.
 app.post("/sync", requireApiKey, handleSync);
-
-// Upcoming events in the legacy snapshot shape fyte-center reads today.
-app.get("/events", async (req, res) => {
-  try {
-    return res.status(200).json(await getUpcomingEvents());
-  } catch (err) {
-    return sendServerError(res, err);
-  }
-});
 
 // Listen only when run directly (`npm run dev` / `npm start`). On Vercel the
 // exported app is the request handler, and importing this file (e.g. from a

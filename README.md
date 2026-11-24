@@ -1,21 +1,21 @@
 
-# MMA Events API
+# mma-scrape
 
-Serving layer for FightCenter. UFC events, matchups and fighter stats come from the
+Nightly sync for FightCenter. UFC events, matchups and fighter stats come from the
 [ufc-data-pipeline](../ufc-data-pipeline) BigQuery warehouse (`analytics.fct_fights`,
 `analytics.dim_fighters`) and are synced into Supabase Postgres. ESPN's public scoreboard API
 is used for one thing only: which broadcast segment (Main Card / Prelims / Early Prelims) each
 fight is on and when that segment starts, matched onto fights by event date (±1 day) and
 fighter-name pair.
 
-The API can be found at https://mma-events-api.vercel.app/events
-My accompanying website can be found at https://fyte-center.vercel.app/
+[fyte-center](https://fyte-center.vercel.app/) reads the synced tables straight from Supabase;
+this service only writes them.
 
 ## Technology
 
 - Supabase Postgres (`pg`) for serving storage, schema in `db/migrations/`
 - BigQuery (`@google-cloud/bigquery`) as the source of truth
-- Express
+- Express (single `POST /sync` endpoint, deployed on Vercel)
 
 ## Database setup
 
@@ -30,8 +30,8 @@ schema. The sync connects as a restricted role that can only access that schema.
    to its own schemas.
 3. Set `SUPABASE_DB_URL` to the transaction-pooler URL with username
    `fightcenter_sync.<project-ref>` (see `.env.example`).
-4. Later, to let fyte-center query Supabase directly, add `fightcenter` under
-   Dashboard → API → Exposed schemas and use `createClient(url, anonKey, { db: { schema: "fightcenter" } })`.
+4. For fyte-center's reads, `fightcenter` is listed under Dashboard → Data API → Settings →
+   Exposed schemas; it queries with `createClient(url, publishableKey, { db: { schema: "fightcenter" } })`.
 
 ## Sync
 
@@ -46,8 +46,10 @@ Events the warehouse marks `event_status = 'cancelled'` (future-dated, but gone 
 upcoming-events page) are skipped, and deleted from Postgres if an earlier sync stored them.
 This needs `fct_fights` built with `event_status` (ufc-data-pipeline).
 
-In production, a daily [cron-job.org](https://cron-job.org) job calls `POST /sync` with an
-`x-api-key` header (cron-job.org emails on failure). The same request triggers a sync by hand.
+In production, the ufc-data-pipeline GitHub Actions run (5 AM Phoenix) calls `POST /sync` with
+an `x-api-key` header right after loading the warehouse; a daily [cron-job.org](https://cron-job.org)
+job at 6 AM makes the same call as a backup and emails on failure. The same request triggers a
+sync by hand.
 
 See `.env.example` for the environment variables.
 
@@ -58,15 +60,13 @@ See `.env.example` for the environment variables.
 - `fights`: one row per fight, with `fight_order` (0 = main event) and the ESPN `card_segment`
 - `fight_stats`: one row per fighter per fight (participants, results and per-fight stats)
 
-RLS allows public `select` only (once the schema is exposed through Supabase's API); writes are
-limited to the `fightcenter_sync` role.
+RLS allows public `select` only (what fyte-center uses); writes are limited to the
+`fightcenter_sync` role.
 
 ## Endpoint
 
-#### GET /events
+#### POST /sync
 
-Upcoming events in the legacy snapshot shape (`[{ data: [event] }]`) that fyte-center reads
-today. Each event has `title`, `link`, `mainCardStartIso`, `prelimsStartIso`,
-`earlyPrelimsStartIso`, `dateTime`, `city`, `state`, `country`, and `fights`. Each fight has
-`cardSection` (`main`, `prelims`, `early_prelims`, or `null` when ESPN hasn't listed it yet),
-plus `fighter1`/`fighter2` (`name`, `link`, `fighterId`).
+Requires `x-api-key` (`ADMIN_API_KEY`, or `SCRAPER_KEY`). Runs the BigQuery sync, then the ESPN
+segment match, and returns a JSON summary. Answers 500 if the ESPN step failed or looks broken
+(no ESPN events, or none matched), even though the BigQuery part is saved.
