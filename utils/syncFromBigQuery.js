@@ -233,7 +233,7 @@ function toFightRow(row) {
 }
 
 // A corner with no fighter id (opponent not announced yet) gets no row: the
-// fight is still synced, and /events shows that slot as "TBD".
+// fight is still synced, and fyte-center shows that slot as "TBD".
 function toFightStatsRows(row) {
   return [1, 2]
     .filter((corner) => row[`fighter_${corner}_id`])
