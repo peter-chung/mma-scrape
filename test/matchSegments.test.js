@@ -1,6 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { matchEventSegments, normalizeName, segmentWarnings } = require("../utils/matchSegments");
+const {
+  matchEventSegments,
+  normalizeName,
+  segmentWarnings,
+  segmentsInCardOrder,
+} = require("../utils/matchSegments");
 const { parseEventSegments } = require("../utils/espnSegments");
 
 const MAIN = "2026-12-13T03:00:00Z";
@@ -162,4 +167,22 @@ test("ambiguous last-name fallback does not match", () => {
   const ids = result.fightSegments.map((f) => f.fightId).sort();
   assert.deepEqual(ids, ["a", "b"]);
   assert.equal(result.fightSegments.find((f) => f.fightId === "a").segment, "prelims");
+});
+
+test("segmentsInCardOrder rejects sections that don't run main → prelims → early down the card", () => {
+  const event = { fights: ["f0", "f1", "f2", "f3"].map((fightId) => ({ fightId })) };
+  const withSegments = (...segments) => ({
+    fightSegments: segments.map((segment, index) => ({ fightId: `f${index}`, segment })),
+  });
+
+  assert.equal(segmentsInCardOrder(event, withSegments("main", "main", "prelims", "early_prelims")), true);
+  // unmatched fights (no section) are ignored
+  assert.equal(
+    segmentsInCardOrder(event, { fightSegments: [{ fightId: "f0", segment: "main" }, { fightId: "f3", segment: "prelims" }] }),
+    true
+  );
+  // main event labelled prelims (e.g. Rockhold vs. Branch, 2017)
+  assert.equal(segmentsInCardOrder(event, withSegments("prelims", "prelims", "main", "main")), false);
+  // interleaved (e.g. TUF: Heavy Hitters Finale, 2018)
+  assert.equal(segmentsInCardOrder(event, withSegments("main", "prelims", "main", "prelims")), false);
 });
