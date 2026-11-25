@@ -32,12 +32,23 @@ function toIsoString(value = "") {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Pause between scoreboard requests during the history backfill.
+const backfillRequestDelayMs = 300;
+
+function toEspnDate(date) {
+  return date.toISOString().slice(0, 10).replace(/-/g, "");
+}
+
 function getUpcomingDateRange(days) {
   const start = new Date();
-  const end = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
-  const format = (date) => date.toISOString().slice(0, 10).replace(/-/g, "");
+  const end = new Date(start.getTime() + days * DAY_MS);
 
-  return `${format(start)}-${format(end)}`;
+  return `${toEspnDate(start)}-${toEspnDate(end)}`;
+}
+
+function scoreboardUrl(dateRange) {
+  return `${scoreboardApiUrl}?dates=${dateRange}&limit=${scoreboardEventLimit}`;
 }
 
 async function fetchJson(url) {
@@ -148,12 +159,37 @@ function isUpcomingEvent(event = {}) {
   return event.status?.type?.state === "pre";
 }
 
+function isCompletedEvent(event = {}) {
+  return event.status?.type?.state === "post";
+}
+
+// Card sections can only be told apart when the bouts have at least two
+// distinct start times. ESPN's older events (roughly pre-2016) list every bout
+// at one time, which would label the whole card "main", so they're skipped.
+function hasDistinctSegments(parsedEvent) {
+  return Object.values(parsedEvent.segmentStarts).filter(Boolean).length >= 2;
+}
+
+// [{ start, end }] calendar months (UTC) from the month of `since`
+// (YYYY-MM-DD) through the month of `until`.
+function monthWindows(since, until = new Date()) {
+  const windows = [];
+  let cursor = new Date(`${since.slice(0, 7)}-01T00:00:00Z`);
+
+  while (cursor <= until) {
+    const next = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1));
+    windows.push({ start: cursor, end: new Date(next.getTime() - DAY_MS) });
+    cursor = next;
+  }
+
+  return windows;
+}
+
 /**
  * @returns {Promise<Array<{espnEventId, name, date, segmentStarts, fights: Array<{fighter1Name, fighter2Name, segment, startTime}>}>>}
  */
 async function fetchEspnSegments() {
-  const url = `${scoreboardApiUrl}?dates=${getUpcomingDateRange(upcomingWindowDays)}&limit=${scoreboardEventLimit}`;
-  const payload = await fetchJson(url);
+  const payload = await fetchJson(scoreboardUrl(getUpcomingDateRange(upcomingWindowDays)));
 
   return (payload.events || [])
     .filter(isUpcomingEvent)
@@ -161,4 +197,37 @@ async function fetchEspnSegments() {
     .filter((event) => event.date && event.fights.length);
 }
 
-module.exports = { fetchEspnSegments, parseEventSegments };
+/**
+ * Completed ESPN events from `since` (YYYY-MM-DD) to today, one scoreboard
+ * request per month. Only events whose sections can be told apart are kept.
+ *
+ * @returns {Promise<{ events: Array, fetchedEvents: number }>} events in the
+ *   same shape as fetchEspnSegments(); fetchedEvents counts every completed one
+ */
+async function fetchPastEspnSegments(since) {
+  const events = [];
+  let fetchedEvents = 0;
+
+  for (const { start, end } of monthWindows(since)) {
+    const payload = await fetchJson(scoreboardUrl(`${toEspnDate(start)}-${toEspnDate(end)}`));
+    const completed = (payload.events || []).filter(isCompletedEvent).map(parseEventSegments);
+
+    fetchedEvents += completed.length;
+    events.push(
+      ...completed.filter(
+        (event) => event.date && event.fights.length && hasDistinctSegments(event)
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, backfillRequestDelayMs));
+  }
+
+  return { events, fetchedEvents };
+}
+
+module.exports = {
+  fetchEspnSegments,
+  fetchPastEspnSegments,
+  parseEventSegments,
+  hasDistinctSegments,
+  monthWindows,
+};

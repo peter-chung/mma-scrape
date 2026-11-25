@@ -39,8 +39,15 @@ schema. The sync connects as a restricted role that can only access that schema.
 npm run backfill        # all history, run once locally
 npm run sync            # nightly window: events from the last 30 days + upcoming
 npm run sync -- --segments-only   # only re-match ESPN segment times
+npm run sync -- --segments-backfill [--since 2015-01-01] [--dry-run]
+                        # one-time: ESPN card sections for past events that have none
 npm test                # matching unit tests
 ```
+
+ESPN only keeps distinct per-section start times for past events from about 2016 on, so the
+segments backfill leaves older events as a single card. It also skips events whose ESPN times
+don't run main → prelims → early prelims down the card (a few old events have them out of order).
+New events keep the sections they got while upcoming, so the backfill doesn't need to run again.
 
 Events the warehouse marks `event_status = 'cancelled'` (future-dated, but gone from ufcstats'
 upcoming-events page) are skipped, and deleted from Postgres if an earlier sync stored them.

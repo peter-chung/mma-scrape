@@ -1,4 +1,4 @@
-const { fetchEspnSegments } = require("./espnSegments");
+const { fetchEspnSegments, fetchPastEspnSegments } = require("./espnSegments");
 const { getPool, withTransaction, table } = require("./db");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -144,18 +144,22 @@ function matchEventSegments(dbEvents, espnEvents) {
   return results;
 }
 
-async function loadUpcomingDbEvents(client) {
-  const { rows } = await client.query(`
+// Events matching `where`, each with its fights' two fighter names, in the
+// shape matchEventSegments() takes.
+async function loadDbEvents(client, where, params = []) {
+  const { rows } = await client.query(
+    `
     select e.event_id, e.event_date, f.fight_id, fs.corner,
            trim(concat_ws(' ', fr.first_name, fr.last_name)) as full_name
     from ${table("events")} e
     join ${table("fights")} f on f.event_id = e.event_id
     left join ${table("fight_stats")} fs on fs.fight_id = f.fight_id
     left join ${table("fighters")} fr on fr.fighter_id = fs.fighter_id
-    where not e.completed
-      and e.event_date >= current_date - 1
+    where ${where}
     order by e.event_date, f.fight_order, fs.corner
-  `);
+  `,
+    params
+  );
 
   const events = new Map();
   rows.forEach((row) => {
@@ -172,6 +176,20 @@ async function loadUpcomingDbEvents(client) {
   });
 
   return [...events.values()].map((event) => ({ ...event, fights: [...event.fights.values()] }));
+}
+
+function loadUpcomingDbEvents(client) {
+  return loadDbEvents(client, "not e.completed and e.event_date >= current_date - 1");
+}
+
+// Completed events that never got ESPN sections: everything synced before the
+// segment step existed, or that ESPN didn't list while it was upcoming.
+function loadPastDbEventsWithoutSegments(client, since) {
+  return loadDbEvents(
+    client,
+    "e.completed and e.segments_synced_at is null and e.event_date >= $1::date",
+    [since]
+  );
 }
 
 /**
@@ -205,8 +223,99 @@ async function syncEspnSegments() {
   const dbEvents = await loadUpcomingDbEvents(getPool());
   const results = matchEventSegments(dbEvents, espnEvents);
 
-  // Three set-based statements regardless of card count (one round trip each),
-  // instead of one UPDATE per event and per fight.
+  await writeSegments(results);
+
+  return {
+    espnEvents: espnEvents.length,
+    upcomingDbEvents: dbEvents.length,
+    matchedEvents: results.length,
+    warnings: segmentWarnings(espnEvents.length, dbEvents.length, results.length),
+    ...matchCounts(results),
+    unmatchedEvents: dbEvents
+      .filter((event) => !results.some((result) => result.eventId === event.eventId))
+      .map((event) => event.eventId),
+  };
+}
+
+function matchCounts(results) {
+  return {
+    matchedFights: results.reduce((sum, result) => sum + result.fightSegments.length, 0),
+    unmatchedFights: results.reduce((sum, result) => sum + result.unmatchedFightIds.length, 0),
+  };
+}
+
+/**
+ * One-time history backfill: ESPN sections for completed events that have
+ * none, from `since` (YYYY-MM-DD) on. ESPN only has distinct per-section start
+ * times from about 2016, so earlier events stay one card. Safe to re-run:
+ * events that got sections are skipped next time.
+ */
+const SEGMENT_RANK = { main: 0, prelims: 1, early_prelims: 2 };
+
+/**
+ * True when the matched sections run in card order: walking down the bout
+ * order (main event first), sections only go main → prelims → early prelims.
+ * A few old ESPN events have start times that break this (the main event on
+ * the prelims, or main and prelims interleaved); those are better left as one
+ * card than shown wrong.
+ *
+ * @param dbEvent  fights in fight_order order (as loadDbEvents returns them)
+ */
+function segmentsInCardOrder(dbEvent, result) {
+  const segmentByFight = new Map(result.fightSegments.map((fight) => [fight.fightId, fight.segment]));
+  const ranks = dbEvent.fights
+    .map((fight) => SEGMENT_RANK[segmentByFight.get(fight.fightId)])
+    .filter((rank) => rank !== undefined);
+
+  return ranks.every((rank, index) => index === 0 || rank >= ranks[index - 1]);
+}
+
+async function backfillEspnSegments({ since = "2015-01-01", dryRun = false } = {}) {
+  const { events: espnEvents, fetchedEvents } = await fetchPastEspnSegments(since);
+  const dbEvents = await loadPastDbEventsWithoutSegments(getPool(), since);
+  const dbEventsById = new Map(dbEvents.map((event) => [event.eventId, event]));
+
+  const matchedResults = matchEventSegments(dbEvents, espnEvents);
+  const results = matchedResults.filter((result) =>
+    segmentsInCardOrder(dbEventsById.get(result.eventId), result)
+  );
+  const outOfOrder = matchedResults.filter((result) => !results.includes(result));
+
+  if (!dryRun) {
+    await writeSegments(results);
+  }
+
+  const matchedIds = new Set(results.map((result) => result.eventId));
+  const unmatched = dbEvents.filter((event) => !matchedIds.has(event.eventId));
+
+  return {
+    since,
+    dryRun,
+    // Earliest/latest matched dates show where ESPN's section data starts.
+    matchedDateRange: results.length
+      ? [
+          dbEvents.find((event) => matchedIds.has(event.eventId)).eventDate,
+          dbEvents.findLast((event) => matchedIds.has(event.eventId)).eventDate,
+        ]
+      : null,
+    unmatchedEventsAfter2018: unmatched.filter((event) => event.eventDate >= "2018-01-01").length,
+    skippedOutOfOrder: outOfOrder.map((result) => {
+      const event = dbEventsById.get(result.eventId);
+      return `${event.eventDate} ${result.eventId}`;
+    }),
+    espnCompletedEvents: fetchedEvents,
+    espnEventsWithSections: espnEvents.length,
+    dbEventsWithoutSections: dbEvents.length,
+    matchedEvents: results.length,
+    ...matchCounts(results),
+  };
+}
+
+// Writes matched sections: each event's segment start times, then for each
+// matched event clears every fight's section and sets the matched ones, so a
+// fight ESPN moved or dropped doesn't keep a stale section. Three set-based
+// statements regardless of card count (one round trip each).
+async function writeSegments(results) {
   const fightSegments = results.flatMap((result) => result.fightSegments);
 
   if (results.length) {
@@ -246,18 +355,13 @@ async function syncEspnSegments() {
       );
     });
   }
-
-  return {
-    espnEvents: espnEvents.length,
-    upcomingDbEvents: dbEvents.length,
-    matchedEvents: results.length,
-    warnings: segmentWarnings(espnEvents.length, dbEvents.length, results.length),
-    matchedFights: results.reduce((sum, result) => sum + result.fightSegments.length, 0),
-    unmatchedFights: results.reduce((sum, result) => sum + result.unmatchedFightIds.length, 0),
-    unmatchedEvents: dbEvents
-      .filter((event) => !results.some((result) => result.eventId === event.eventId))
-      .map((event) => event.eventId),
-  };
 }
 
-module.exports = { syncEspnSegments, matchEventSegments, normalizeName, segmentWarnings };
+module.exports = {
+  syncEspnSegments,
+  backfillEspnSegments,
+  matchEventSegments,
+  segmentsInCardOrder,
+  normalizeName,
+  segmentWarnings,
+};
